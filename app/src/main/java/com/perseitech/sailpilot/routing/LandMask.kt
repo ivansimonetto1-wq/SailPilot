@@ -1,6 +1,6 @@
 package com.perseitech.sailpilot.routing
 import org.locationtech.jts.geom.Coordinate
-
+import org.locationtech.jts.geom.GeometryFactory
 
 class LandMask(
     val cfg: GridConfig,
