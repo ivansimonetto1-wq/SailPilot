@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.SailPilot" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- Colori opzionali: puoi lasciarli vuoti o gestiti da Material3 -->
+        <item name="android:statusBarColor">?attr/colorPrimary</item>
+        <item name="android:navigationBarColor">?attr/colorSurface</item>
+        <!-- Compatibilità edge-to-edge se vuoi -->
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>
