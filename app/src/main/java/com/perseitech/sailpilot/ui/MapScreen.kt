@@ -26,10 +26,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 
+import com.perseitech.sailpilot.R
 import com.perseitech.sailpilot.data.Geo
 import com.perseitech.sailpilot.data.LatLon
 import com.perseitech.sailpilot.location.LocationService
@@ -125,6 +127,7 @@ fun MapScreen(modifier: Modifier = Modifier) {
 
                     startMarker = Marker(this).apply {
                         title = "Partenza"
+                        icon = ContextCompat.getDrawable(context, R.drawable.ic_marker_start)
                         setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
                         isEnabled = false
                     }
@@ -132,6 +135,7 @@ fun MapScreen(modifier: Modifier = Modifier) {
 
                     destMarker = Marker(this).apply {
                         title = "Arrivo"
+                        icon = ContextCompat.getDrawable(context, R.drawable.ic_marker_dest)
                         setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
                         isEnabled = false
                     }
