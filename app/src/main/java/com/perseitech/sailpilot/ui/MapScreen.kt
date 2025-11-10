@@ -1,110 +1,182 @@
 package com.perseitech.sailpilot.ui
 
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import android.graphics.Color
+import android.view.ViewGroup
+import androidx.compose.foundation.layout.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import kotlinx.coroutines.launch
-
+import com.perseitech.sailpilot.PickMode
+import com.perseitech.sailpilot.routing.LatLon
+import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
-
-// IMPORT del router: assicurati che il package di SeaRouter sia questo.
-import com.perseitech.sailpilot.routing.SeaRouter
+import org.osmdroid.views.overlay.gestures.RotationGestureOverlay
+import org.osmdroid.views.overlay.compass.InternalCompassOrientationProvider
+import org.osmdroid.views.overlay.compass.CompassOverlay
+import org.osmdroid.views.overlay.ScaleBarOverlay
+import org.osmdroid.views.overlay.MapEventsOverlay
+import org.osmdroid.events.MapEventsReceiver
 
 @Composable
 fun MapScreen(
-    modifier: Modifier = Modifier
+    start: LatLon?,
+    goal: LatLon?,
+    path: List<LatLon>,
+    pickMode: PickMode,
+    isSea: (LatLon) -> Boolean,
+    onRequestPickStart: () -> Unit,
+    onRequestGpsStart: () -> Unit,
+    onClearRoute: () -> Unit,
+    onPointPicked: (LatLon) -> Unit
 ) {
     val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
 
-    // Router
-    val router = remember(ctx) { SeaRouter(ctx) }
-
-    // ===== Stato mappa / overlay =====
+    // Stato interno del MapView per evitare ricreazioni
     var mapView by remember { mutableStateOf<MapView?>(null) }
-    var routeOverlay by remember { mutableStateOf<Polyline?>(null) }
-    var coastOverlay by remember { mutableStateOf<Polyline?>(null) }
 
-    // ===== Marker =====
-    var startMarker by remember { mutableStateOf<Marker?>(null) }
-    var endMarker by remember { mutableStateOf<Marker?>(null) }
-    var boatMarker by remember { mutableStateOf<Marker?>(null) }
+    Surface(color = MaterialTheme.colorScheme.background) {
+        Box(Modifier.fillMaxSize()) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = {
+                    MapView(ctx).apply {
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                        setTileSource(TileSourceFactory.MAPNIK)
+                        setMultiTouchControls(true)
+                        controller.setZoom(6.0)
+                        controller.setCenter(GeoPoint(41.9, 12.5)) // Italia approx
 
-    // ===== Punti =====
-    var start by remember { mutableStateOf<GeoPoint?>(null) }
-    var end by remember { mutableStateOf<GeoPoint?>(null) }
+                        // Overlays base
+                        overlays.add(ScaleBarOverlay(this))
+                        overlays.add(CompassOverlay(ctx, InternalCompassOrientationProvider(ctx), this).apply { enableCompass() })
+                        overlays.add(RotationGestureOverlay(this).apply { isEnabled = true })
 
-    AndroidView(
-        modifier = modifier,
-        factory = { context ->
-            MapView(context).apply {
-                controller.setZoom(9.0)
-                controller.setCenter(GeoPoint(43.0, 12.0))
-                mapView = this
+                        // Overlay eventi (single tap / long press)
+                        val eventsReceiver = object : MapEventsReceiver {
+                            override fun singleTapConfirmedHelper(p: GeoPoint?): Boolean {
+                                // no-op (potresti mettere selezione rapida qui)
+                                return false
+                            }
+                            override fun longPressHelper(p: GeoPoint?): Boolean {
+                                if (p == null) return false
+                                val picked = LatLon(p.latitude, p.longitude)
+                                // Rispetta vincolo "solo mare"
+                                if (!isSea(picked)) return true // consumiamo, ma ignoriamo punto
+                                onPointPicked(picked)
+                                return true
+                            }
+                        }
+                        overlays.add(MapEventsOverlay(eventsReceiver))
+
+                        // salva riferimento
+                        mapView = this
+                    }
+                },
+                update = { mv ->
+                    // Pulizia marker/linea e ridisegno
+                    // (manteniamo solo overlays fissi: scalebar/compass/rotation/events)
+                    mv.overlays.removeAll { it is Marker || it is Polyline }
+
+                    // Start marker
+                    start?.let {
+                        val m = Marker(mv).apply {
+                            position = GeoPoint(it.lat, it.lon)
+                            title = "Partenza"
+                            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                        }
+                        mv.overlays.add(m)
+                    }
+
+                    // Goal marker
+                    goal?.let {
+                        val m = Marker(mv).apply {
+                            position = GeoPoint(it.lat, it.lon)
+                            title = "Arrivo"
+                            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                        }
+                        mv.overlays.add(m)
+                    }
+
+                    // Route polyline
+                    if (path.size > 1) {
+                        val line = Polyline().apply {
+                            outlinePaint.color = Color.RED
+                            outlinePaint.strokeWidth = 6f
+                            setPoints(path.map { GeoPoint(it.lat, it.lon) })
+                        }
+                        mv.overlays.add(line)
+
+                        // Fit solo quando esiste una rotta
+                        val bb = org.osmdroid.util.BoundingBox.fromGeoPoints(path.map { GeoPoint(it.lat, it.lon) })
+                        mv.zoomToBoundingBox(bb, true, 100)
+                    }
+
+                    mv.invalidate()
+                }
+            )
+
+            // Pulsanti azione
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // 1) Icona freccia verso l'alto = seleziona partenza manuale
+                FloatingActionButton(onClick = onRequestPickStart) {
+                    Icon(imageVector = Icons.Filled.ArrowUpward, contentDescription = "Seleziona partenza (long-tap)")
+                }
+                // 2) Cestino = cancella rotta
+                FloatingActionButton(onClick = onClearRoute) {
+                    Icon(imageVector = Icons.Filled.Delete, contentDescription = "Cancella rotta")
+                }
+                // 3) GPS = usa posizione dispositivo come partenza
+                FloatingActionButton(onClick = onRequestGpsStart) {
+                    Icon(imageVector = Icons.Filled.MyLocation, contentDescription = "Partenza da GPS")
+                }
             }
-        },
-        update = { it.invalidate() }
-    )
 
-    fun recomputeRouteIfReady() {
-        val mv = mapView ?: return
-        val s = start ?: return
-        val e = end ?: return
-
-        scope.launch {
-            // Sostituisci con la tua API reale:
-            // es. val pts: List<GeoPoint> = router.route(s, e)
-            val pts: List<GeoPoint> = straightLineFallback(s, e)
-
-            routeOverlay?.let { mv.overlays.remove(it) }
-            routeOverlay = Polyline().apply { setPoints(pts) }
-            mv.overlays.add(routeOverlay)
-            mv.invalidate()
+            // Piccolo hint di modalità
+            if (pickMode != PickMode.NONE) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 8.dp)
+                ) {
+                    val msg = when (pickMode) {
+                        PickMode.PICK_START -> "Long-tap sulla mappa per impostare la PARTENZA (solo mare)"
+                        PickMode.PICK_GOAL  -> "Long-tap sulla mappa per impostare l'ARRIVO (solo mare)"
+                        else -> ""
+                    }
+                    if (msg.isNotEmpty()) {
+                        Surface(shadowElevation = 4.dp) {
+                            Text(
+                                text = msg,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+            }
         }
-    }
-
-    fun setStart(point: GeoPoint) {
-        val mv = mapView ?: return
-        start = point
-        startMarker?.let { mv.overlays.remove(it) }
-        startMarker = Marker(mv).apply {
-            position = point
-            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-            title = "Start"
-        }
-        mv.overlays.add(startMarker)
-        mv.invalidate()
-        recomputeRouteIfReady()
-    }
-
-    fun setEnd(point: GeoPoint) {
-        val mv = mapView ?: return
-        end = point
-        endMarker?.let { mv.overlays.remove(it) }
-        endMarker = Marker(mv).apply {
-            position = point
-            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-            title = "End"
-        }
-        mv.overlays.add(endMarker)
-        mv.invalidate()
-        recomputeRouteIfReady()
-    }
-
-    // Demo: set di due punti di prova alla prima init
-    if (mapView != null && start == null && end == null) {
-        setStart(GeoPoint(43.55, 10.30))
-        setEnd(GeoPoint(42.45, 11.00))
     }
 }
-
-private fun straightLineFallback(a: GeoPoint, b: GeoPoint): List<GeoPoint> = listOf(a, b)

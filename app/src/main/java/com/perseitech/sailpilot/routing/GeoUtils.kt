@@ -1,24 +1,39 @@
 package com.perseitech.sailpilot.routing
 
-
 import kotlin.math.*
 
-
 object GeoUtils {
-    private const val M_PER_DEG_LAT = 111_320.0
+    private const val EARTH_RADIUS_M = 6_371_008.8
+    private const val METERS_PER_DEG_LAT = 111_320.0
 
+    // --- gradi/metri ---
+    fun metersToDegLat(m: Double): Double = m / METERS_PER_DEG_LAT
 
-    fun metersPerDegLat(): Double = M_PER_DEG_LAT
-
-
-    fun metersPerDegLon(latDeg: Double): Double = M_PER_DEG_LAT * cos(Math.toRadians(latDeg))
-
-
-    fun haversineMeters(a: LatLon, b: LatLon): Double {
-        val R = 6371_000.0
-        val dLat = Math.toRadians(b.lat - a.lat)
-        val dLon = Math.toRadians(b.lon - a.lon)
-        val s = sin(dLat/2).pow(2.0) + cos(Math.toRadians(a.lat)) * cos(Math.toRadians(b.lat)) * sin(dLon/2).pow(2.0)
-        return 2 * R * asin(min(1.0, sqrt(s)))
+    fun metersToDegLon(m: Double, latDeg: Double): Double {
+        val metersPerDegLon = METERS_PER_DEG_LAT * cos(latDeg.toRad())
+        return m / metersPerDegLon.coerceAtLeast(1e-9)
     }
+
+    fun degLatToMeters(d: Double): Double = d * METERS_PER_DEG_LAT
+
+    fun degLonToMeters(d: Double, latDeg: Double): Double {
+        val metersPerDegLon = METERS_PER_DEG_LAT * cos(latDeg.toRad())
+        return d * metersPerDegLon
+    }
+
+    // --- distanze ---
+    /** Distanza sferica (Haversine) in metri. */
+    fun haversineMeters(a: LatLon, b: LatLon): Double {
+        val φ1 = a.lat.toRad(); val φ2 = b.lat.toRad()
+        val dφ = (b.lat - a.lat).toRad()
+        val dλ = (b.lon - a.lon).toRad()
+        val s = sin(dφ / 2).pow(2) + cos(φ1) * cos(φ2) * sin(dλ / 2).pow(2)
+        return 2 * EARTH_RADIUS_M * atan2(sqrt(s), sqrt(1 - s))
+    }
+
+    /** Alias usato dall'A*: identico a haversineMeters. */
+    fun distanceMeters(a: LatLon, b: LatLon): Double = haversineMeters(a, b)
+
+    // --- utils ---
+    private fun Double.toRad() = this * Math.PI / 180.0
 }

@@ -8,7 +8,7 @@ import org.locationtech.jts.geom.util.GeometryFixer
 import org.locationtech.jts.io.ParseException
 import org.locationtech.jts.io.WKTReader
 
-object WktLandLoader {
+object WktLandLoaderr {
     private val geometryFactory = GeometryFactory()
     private val wktReader = WKTReader(geometryFactory)
     private val preparedFactory = PreparedGeometryFactory()
