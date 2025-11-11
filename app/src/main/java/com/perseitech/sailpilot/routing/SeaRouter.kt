@@ -2,6 +2,10 @@ package com.perseitech.sailpilot.routing
 
 import android.util.Log
 
+/**
+ * Router principale: costruisce la griglia dalla BBox, rasterizza il WKT su LandMask,
+ * "aggancia" start/goal al mare se cadono su terra e lancia l'A*.
+ */
 class SeaRouter {
 
     fun route(
@@ -10,27 +14,29 @@ class SeaRouter {
         goal: LatLon,
         bbox: BBox,
         padMeters: Double = 400.0,
-        targetCellMeters: Double = 200.0,
-        maxSegmentMeters: Double = 150.0
+        targetCellMeters: Double = 200.0
     ): List<LatLon>? {
-        val cfg = GridConfig.build(bbox, padMeters, targetCellMeters)
-        val mask = LandMaskBuilder.fromWkt(landWkt, cfg)
+        Log.i(TAG, "SeaRouter.route: WKT bytes=${landWkt.length}")
 
-        // vincolo: partenza/arrivo devono stare in mare → snap se servono
-        val s = if (mask.isSea(start)) start else SnapToSea.snap(start, mask) ?: return null
-        val g = if (mask.isSea(goal)) goal else SnapToSea.snap(goal, mask) ?: return null
+        // 1) Config griglia + LandMask dal WKT
+        val cfg  = GridConfig.build(bbox, padMeters, targetCellMeters)
+        val land = LandMaskBuilder.fromWkt(landWkt, cfg)
 
-        val raw = AStar.route(mask, s, g) ?: return null
-        val nice = PathPost.densify(raw, maxSegmentMeters)
+        // 2) Snap a mare se i punti cadono su terra
+        val sSea = if (land.isLand(start)) SnapToSea.snap(start, land) else start
+        val gSea = if (land.isLand(goal))  SnapToSea.snap(goal,  land) else goal
 
-        Log.d("SeaRouter", "A* path pts=${raw.size} (out=${nice.size}) rows=${cfg.rows} cols=${cfg.cols}")
-        return nice
+        // 3) A* su griglia acqua
+        val rawPath = AStar.route(land, sSea, gSea)
+        if (rawPath == null) {
+            Log.w(TAG, "A* non ha trovato un percorso")
+            return null
+        }
+
+        // 4) (opzionale) Densificazione post-process (se hai un PathPost; altrimenti restituisci rawPath)
+        // return PathPost.densify(rawPath, maxSpacingMeters = targetCellMeters / 2)
+        return rawPath
     }
 
-    /** Espone anche solo il test mare/terra per i long-tap. */
-    fun isSea(landWkt: String, bbox: BBox, padMeters: Double, targetCellMeters: Double, p: LatLon): Boolean {
-        val cfg = GridConfig.build(bbox, padMeters, targetCellMeters)
-        val mask = LandMaskBuilder.fromWkt(landWkt, cfg)
-        return mask.isSea(p)
-    }
+    companion object { private const val TAG = "SeaRouter" }
 }

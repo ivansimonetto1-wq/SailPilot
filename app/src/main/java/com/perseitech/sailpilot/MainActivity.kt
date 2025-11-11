@@ -16,9 +16,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.app.ActivityCompat
-import com.perseitech.sailpilot.routing.LatLon
-import com.perseitech.sailpilot.ui.MapScreen
 import org.osmdroid.config.Configuration
+import com.perseitech.sailpilot.routing.*
+import com.perseitech.sailpilot.ui.MapScreen
 
 class MainActivity : ComponentActivity() {
 
@@ -26,8 +26,10 @@ class MainActivity : ComponentActivity() {
         val lm = getSystemService(LOCATION_SERVICE) as LocationManager
         val providers = lm.getProviders(true)
         for (p in providers.reversed()) {
-            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
-                ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            if (
+                ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+                ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED
+            ) {
                 return null
             }
             val loc = lm.getLastKnownLocation(p)
@@ -39,21 +41,40 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Necessario per osmdroid
+        // osmdroid user agent
         Configuration.getInstance().userAgentValue = "SailPilot/1.0 (osmdroid)"
 
         setContent {
             MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    // --- STATE ---
                     var start by remember { mutableStateOf<LatLon?>(null) }
                     var goal by remember { mutableStateOf<LatLon?>(null) }
                     var path by remember { mutableStateOf<List<LatLon>>(emptyList()) }
                     var pickMode by remember { mutableStateOf(PickMode.NONE) }
 
-                    // TODO: rimpiazza con il vero controllo mare (LandMask.isSea)
-                    val isSea: (LatLon) -> Boolean = { _ -> true }
+                    // Carica WKT una sola volta
+                    val landWkt by remember {
+                        mutableStateOf(
+                            runCatching {
+                                assets.open("coast.wkt").bufferedReader().use { it.readText() }
+                            }.getOrElse { "" }
+                        )
+                    }
 
+                    // Indice WKT per test puntuale (vincolo "solo mare" al tap)
+                    val landIndex by remember(landWkt) { mutableStateOf(WktLandIndex.parse(landWkt)) }
+
+                    // Lambda: consentire tap SOLO in mare
+                    val isSea: (LatLon) -> Boolean = { p -> !landIndex.contains(p) }
+
+                    // Router per il calcolo rotta (A* su griglia mare)
+                    val router = remember { SeaRouter() }
+
+                    // Launcher per permission GPS
                     val permLauncher = rememberLauncherForActivityResult(
                         contract = ActivityResultContracts.RequestPermission()
                     ) { granted ->
@@ -61,9 +82,12 @@ class MainActivity : ComponentActivity() {
                             val loc = getLastKnownLocation()
                             if (loc != null) {
                                 start = LatLon(loc.latitude, loc.longitude)
-                                // dopo aver messo la partenza, si chiede l'arrivo
                                 pickMode = PickMode.PICK_GOAL
-                                Toast.makeText(this, "Partenza da GPS impostata. Long-tap: seleziona ARRIVO (solo mare).", Toast.LENGTH_LONG).show()
+                                Toast.makeText(
+                                    this,
+                                    "Partenza da GPS impostata. Long-tap: seleziona ARRIVO (solo mare).",
+                                    Toast.LENGTH_LONG
+                                ).show()
                             } else {
                                 Toast.makeText(this, "GPS non disponibile.", Toast.LENGTH_SHORT).show()
                             }
@@ -73,27 +97,36 @@ class MainActivity : ComponentActivity() {
                     }
 
                     MapScreen(
-                        start = start,             // LatLon?
-                        goal  = goal,              // LatLon?
-                        path  = path,              // List<LatLon>
+                        start = start,
+                        goal = goal,
+                        path = path,
                         pickMode = pickMode,
-                        isSea = isSea,             // (LatLon) -> Boolean
+                        isSea = isSea,
                         onRequestPickStart = {
-                            // Attiva modalità scelta partenza
-                            goal = null
-                            path = emptyList()
                             pickMode = PickMode.PICK_START
-                            Toast.makeText(this, "Long-tap per scegliere la PARTENZA (solo mare).", Toast.LENGTH_LONG).show()
+                            Toast.makeText(
+                                this,
+                                "Long-tap per scegliere la PARTENZA (solo mare).",
+                                Toast.LENGTH_LONG
+                            ).show()
                         },
                         onRequestGpsStart = {
-                            // Prova ad usare la posizione corrente come partenza
                             when {
-                                ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED -> {
+                                ActivityCompat.checkSelfPermission(
+                                    this,
+                                    Manifest.permission.ACCESS_FINE_LOCATION
+                                ) == PackageManager.PERMISSION_GRANTED -> {
                                     val loc = getLastKnownLocation()
                                     if (loc != null) {
                                         start = LatLon(loc.latitude, loc.longitude)
+                                        goal = null
+                                        path = emptyList()
                                         pickMode = PickMode.PICK_GOAL
-                                        Toast.makeText(this, "Partenza da GPS impostata. Long-tap: seleziona ARRIVO (solo mare).", Toast.LENGTH_LONG).show()
+                                        Toast.makeText(
+                                            this,
+                                            "Partenza da GPS impostata. Long-tap: seleziona ARRIVO (solo mare).",
+                                            Toast.LENGTH_LONG
+                                        ).show()
                                     } else {
                                         Toast.makeText(this, "GPS non disponibile.", Toast.LENGTH_SHORT).show()
                                     }
@@ -108,29 +141,59 @@ class MainActivity : ComponentActivity() {
                             pickMode = PickMode.NONE
                         },
                         onPointPicked = { picked ->
+                            // Blocca i tap su terra
+                            if (!isSea(picked)) {
+                                Toast.makeText(this, "Seleziona solo punti in MARE.", Toast.LENGTH_SHORT).show()
+                                return@MapScreen
+                            }
                             when (pickMode) {
                                 PickMode.PICK_START -> {
-                                    // Verifica mare se vuoi anche qui (isSea(picked))
                                     start = picked
                                     goal = null
                                     path = emptyList()
                                     pickMode = PickMode.PICK_GOAL
-                                    Toast.makeText(this, "Partenza impostata. Long-tap: seleziona ARRIVO (solo mare).", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(
+                                        this,
+                                        "Partenza impostata. Long-tap: seleziona ARRIVO (solo mare).",
+                                        Toast.LENGTH_LONG
+                                    ).show()
                                 }
                                 PickMode.PICK_GOAL -> {
-                                    // Verifica mare se vuoi anche qui (isSea(picked))
                                     goal = picked
                                     pickMode = PickMode.NONE
-
-                                    // DEMO: rotta retta. Sostituisci con SeaRouter.route(...)
                                     val s = start
                                     val g = goal
                                     if (s != null && g != null) {
-                                        path = listOf(s, g)
-                                        Toast.makeText(this, "Arrivo impostato. Rotta creata (demo).", Toast.LENGTH_SHORT).show()
+                                        // Costruisci bbox attorno ai due punti
+                                        val bbox = BBox.around(s, g)
+                                        // Calcola rotta evitando terra
+                                        val route = router.route(
+                                            landWkt = landWkt,
+                                            start = s,
+                                            goal = g,
+                                            bbox = bbox,
+                                            padMeters = 800.0,       // aumenta se zona stretta
+                                            targetCellMeters = 180.0 // più piccolo = più preciso
+                                        )
+                                        if (route == null) {
+                                            Toast.makeText(
+                                                this,
+                                                "Nessun percorso marino trovato (allarga pad o riduci cella).",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        } else {
+                                            path = route
+                                            Toast.makeText(
+                                                this,
+                                                "Rotta calcolata evitando la terra.",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
                                     }
                                 }
-                                else -> Unit
+                                else -> {
+                                    // fuori modalità di pick: ignora
+                                }
                             }
                         }
                     )
