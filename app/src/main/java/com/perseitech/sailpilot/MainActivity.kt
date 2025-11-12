@@ -14,7 +14,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.material3.*
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -22,16 +29,32 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import com.perseitech.sailpilot.export.GpxExporter
-import com.perseitech.sailpilot.location.LocationService
-import com.perseitech.sailpilot.location.LocationServiceController
-import com.perseitech.sailpilot.routing.*
-import com.perseitech.sailpilot.ui.*
 import com.perseitech.sailpilot.io.DataBus
 import com.perseitech.sailpilot.io.NavData
+import com.perseitech.sailpilot.location.LocationService
+import com.perseitech.sailpilot.location.LocationServiceController
+import com.perseitech.sailpilot.ports.Port
+import com.perseitech.sailpilot.ports.PortInfo
+import com.perseitech.sailpilot.ports.PortInfoService
+import com.perseitech.sailpilot.ports.PortsRepository
+import com.perseitech.sailpilot.routing.*
+import com.perseitech.sailpilot.settings.BoatSettings
+import com.perseitech.sailpilot.settings.BoatSettingsRepository
+import com.perseitech.sailpilot.ui.*
+import com.perseitech.sailpilot.regatta.BoatClass
+import com.perseitech.sailpilot.regatta.BoatClassesRepo
+import com.perseitech.sailpilot.regatta.RegattaSettings
+import com.perseitech.sailpilot.regatta.RegattaSettingsRepo
+import com.perseitech.sailpilot.ui.RegattaBoatDialog
+import com.perseitech.sailpilot.ui.SailAdvisorPanel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.*
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
 
@@ -58,31 +81,35 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
 
-                    // ---- STATE condiviso ----
+                    // ---- Stato base rotta ----
                     var start by remember { mutableStateOf<LatLon?>(null) }
                     var goal by remember { mutableStateOf<LatLon?>(null) }
                     var path by remember { mutableStateOf<List<LatLon>>(emptyList()) }
                     var pickMode by remember { mutableStateOf(PickMode.NONE) }
 
+                    // porti selezionati (per Info)
+                    var startPort by remember { mutableStateOf<Port?>(null) }
+                    var goalPort by remember { mutableStateOf<Port?>(null) }
+
+                    // tracking
                     var trackingEnabled by remember { mutableStateOf(false) }
                     val controller = remember { LocationServiceController(this) }
                     val lastLoc by LocationService.lastLocation.collectAsState(initial = null)
 
-                    // ---- NAV DATA BUS (SignalK/NMEA) con fallback GPS ----
+                    // NAV DATA BUS (NMEA / SignalK)
                     val nav by DataBus.nav.collectAsState(initial = NavData())
                     val headingDeg = nav.headingDeg ?: lastLoc?.bearing?.toDouble()
                     val sogKn = nav.sogKn ?: lastLoc?.speed?.takeIf { it > 0 }?.let { it * 1.9438445 }
                     val cogDeg = nav.cogDeg ?: headingDeg
                     val liveLatLon: LatLon? = nav.position ?: lastLoc?.let { LatLon(it.latitude, it.longitude) }
+                    // (per ora il vento non è collegato qui; lo useremo nel SailAdvisor quando disponibile)
 
                     var unitMode by remember { mutableStateOf(UnitMode.NAUTICAL) }
                     var speed by remember { mutableStateOf(5.0) }
                     var forceLightBasemap by remember { mutableStateOf(false) }
-
-                    // MODALITÀ
                     var appMode by remember { mutableStateOf(AppMode.NAVIGATION) }
 
-                    // WKT costa
+                    // WKT costa / router
                     val landWktRaw by remember {
                         mutableStateOf(
                             runCatching { assets.open("coast.wkt").bufferedReader().use { it.readText() } }.getOrElse { "" }
@@ -97,6 +124,32 @@ class MainActivity : ComponentActivity() {
                     val uiScope = rememberCoroutineScope()
                     var isRouting by remember { mutableStateOf(false) }
 
+                    // Boat settings (generali)
+                    val boatRepo = remember { BoatSettingsRepository(this@MainActivity) }
+                    val boat by boatRepo.flow.collectAsState(initial = BoatSettings())
+
+                    // Ports
+                    val ports by produceState<List<Port>>(initialValue = emptyList()) {
+                        value = PortsRepository.loadPorts(this@MainActivity)
+                    }
+
+                    // -------- REGATTA settings --------
+                    val regRepo = remember { RegattaSettingsRepo(this@MainActivity) }
+                    val regSettings by regRepo.flow.collectAsState(initial = RegattaSettings())
+                    val boatClasses by produceState<List<BoatClass>>(initialValue = emptyList()) {
+                        value = BoatClassesRepo.load(this@MainActivity)
+                    }
+                    val selectedClass = remember(regSettings, boatClasses) {
+                        boatClasses.find { it.id == regSettings.classId }
+                    }
+                    var showRegattaSettings by remember { mutableStateOf(false) }
+
+                    // Dialogs vari
+                    var showSettings by remember { mutableStateOf(false) }
+                    var showSailToPort by remember { mutableStateOf(false) }
+                    var portInfoToShow by remember { mutableStateOf<PortInfo?>(null) }
+                    var loadingPortInfo by remember { mutableStateOf(false) }
+
                     fun recalcRouteAsync(s: LatLon, g: LatLon) {
                         if (!wktIsOk) {
                             Toast.makeText(this, "Coast WKT non valido.", Toast.LENGTH_LONG).show()
@@ -106,14 +159,7 @@ class MainActivity : ComponentActivity() {
                             isRouting = true
                             val route = withContext(Dispatchers.Default) {
                                 val bbox = BBox.around(s, g)
-                                router.route(
-                                    landWkt = landWkt,
-                                    start = s,
-                                    goal = g,
-                                    bbox = bbox,
-                                    padMeters = 2500.0,
-                                    targetCellMeters = 160.0
-                                )
+                                router.route(landWkt, s, g, bbox, padMeters = 2500.0, targetCellMeters = 160.0)
                             }
                             isRouting = false
                             if (route == null) {
@@ -143,7 +189,8 @@ class MainActivity : ComponentActivity() {
                                 val sample = 0.5 * cellM
                                 val simplified = PathPost.simplifyRouteSafe(path, mask, tolMeters = tol, sampleStepMeters = sample)
                                 PathPost.smoothChaikinSafe(
-                                    route = simplified, land = mask, iters = 1, alpha = 0.25, sampleStepMeters = sample, keepEndpoints = true
+                                    route = simplified, land = mask, iters = 1, alpha = 0.25,
+                                    sampleStepMeters = sample, keepEndpoints = true
                                 )
                             }
                             isRouting = false
@@ -152,39 +199,34 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // Dati per pannelli
-                    fun fmtLat(v: Double) = (if (v >= 0) "N " else "S ") + String.format("%.5f°", abs(v))
-                    fun fmtLon(v: Double) = (if (v >= 0) "E " else "W ") + String.format("%.5f°", abs(v))
-                    val latText = liveLatLon?.let { fmtLat(it.lat) }
-                    val lonText = liveLatLon?.let { fmtLon(it.lon) }
-
+                    // Dati derivati rotta
                     val nextWp: LatLon? = if (path.isNotEmpty()) {
                         val me = liveLatLon
-                        if (me == null) path.first() else path.firstOrNull { GeoUtils.distanceMeters(me, it) > 30.0 } ?: path.last()
+                        if (me == null) path.first()
+                        else path.firstOrNull { GeoUtils.distanceMeters(me, it) > 30.0 } ?: path.last()
                     } else null
                     val brgToWp = if (liveLatLon != null && nextWp != null) initialBearing(liveLatLon, nextWp) else null
-                    val distToWpNm = if (liveLatLon != null && nextWp != null) GeoUtils.distanceMeters(liveLatLon, nextWp) / 1852.0 else null
+                    val distToWpNm = if (liveLatLon != null && nextWp != null)
+                        GeoUtils.distanceMeters(liveLatLon, nextWp) / 1852.0 else null
                     val etaToWpText = if (sogKn != null && sogKn > 0 && distToWpNm != null) {
                         val h = distToWpNm / sogKn; val hh = h.toInt(); val mm = ((h - hh) * 60).roundToInt(); "${hh}h ${mm}m"
                     } else null
-
                     val estSpeedKnots = if (unitMode == UnitMode.NAUTICAL) speed else (speed / 1.852)
 
-                    // ---- PAGINE dinamiche ----
+                    // ---- Pager: titoli dipendenti da modalità ----
                     val titles = if (appMode == AppMode.NAVIGATION)
                         listOf("Mappa", "Control", "Tools", "Instruments", "Compass", "Connections")
                     else
-                        listOf("Mappa", "Regatta", "Instruments", "Compass", "Tools", "Connections")
+                        listOf("Mappa", "Regatta", "Sails", "Instruments", "Compass", "Tools", "Connections")
 
                     val pagerState = rememberPagerState(initialPage = 0, pageCount = { titles.size })
                     val uiScopePager = rememberCoroutineScope()
-
                     fun goTo(pageName: String) {
                         val idx = titles.indexOf(pageName)
                         if (idx >= 0) uiScopePager.launch { pagerState.animateScrollToPage(idx) }
                     }
 
-                    // ---- TAB ----
+                    // ---- Tabs
                     TabRow(selectedTabIndex = pagerState.currentPage) {
                         titles.forEachIndexed { i, t ->
                             Tab(
@@ -195,12 +237,9 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // ---- CONTENUTO ----
+                    // ---- Contenuto
                     Box(Modifier.fillMaxSize()) {
-                        HorizontalPager(
-                            state = pagerState,
-                            modifier = Modifier.fillMaxSize()
-                        ) { page ->
+                        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
                             when (titles[page]) {
                                 "Mappa" -> {
                                     MapScreen(
@@ -220,26 +259,40 @@ class MainActivity : ComponentActivity() {
                                             val loc = getLastKnownLocation()
                                             if (loc != null) {
                                                 start = LatLon(loc.latitude, loc.longitude)
-                                                goal = null; path = emptyList(); pickMode = PickMode.PICK_GOAL
+                                                startPort = null
+                                                goal = null; goalPort = null
+                                                path = emptyList(); pickMode = PickMode.PICK_GOAL
                                             } else {
                                                 Toast.makeText(this@MainActivity, "GPS non disponibile.", Toast.LENGTH_SHORT).show()
                                             }
                                         },
-                                        onClearRoute = { start = null; goal = null; path = emptyList(); pickMode = PickMode.NONE },
+                                        onClearRoute = {
+                                            start = null; goal = null; path = emptyList()
+                                            pickMode = PickMode.NONE; startPort = null; goalPort = null
+                                        },
                                         onPointPicked = { picked ->
                                             if (wktIsOk && !isSea(picked)) {
                                                 Toast.makeText(this@MainActivity, "Seleziona solo punti in MARE.", Toast.LENGTH_SHORT).show()
                                                 return@MapScreen
                                             }
                                             when (pickMode) {
-                                                PickMode.PICK_START -> { start = picked; goal = null; path = emptyList(); pickMode = PickMode.PICK_GOAL }
-                                                PickMode.PICK_GOAL -> { goal = picked; pickMode = PickMode.NONE; start?.let { recalcRouteAsync(it, picked) } }
+                                                PickMode.PICK_START -> {
+                                                    start = picked; startPort = null
+                                                    goal = null; goalPort = null; path = emptyList()
+                                                    pickMode = PickMode.PICK_GOAL
+                                                }
+                                                PickMode.PICK_GOAL -> {
+                                                    goal = picked; goalPort = null; pickMode = PickMode.NONE
+                                                    start?.let { recalcRouteAsync(it, picked) }
+                                                }
                                                 else -> {}
                                             }
                                         },
                                         onOptimizeRoute = { optimizeRouteIfAny() },
                                         estSpeedKnots = estSpeedKnots.toInt().coerceAtLeast(0),
-                                        onChangeSpeed = { newKn -> speed = if (unitMode == UnitMode.NAUTICAL) newKn.toDouble() else newKn.toDouble() },
+                                        onChangeSpeed = { newKn ->
+                                            speed = if (unitMode == UnitMode.NAUTICAL) newKn.toDouble() else newKn.toDouble()
+                                        },
                                         isRouting = isRouting,
                                         forceLightBasemap = forceLightBasemap,
                                         onToggleForceLight = { forceLightBasemap = !forceLightBasemap },
@@ -248,10 +301,41 @@ class MainActivity : ComponentActivity() {
                                             appMode = if (appMode == AppMode.NAVIGATION) AppMode.REGATTA else AppMode.NAVIGATION
                                         },
                                         onOpenConnections = { goTo("Connections") },
-                                        onOpenControlOrRegatta = { goTo(if (appMode == AppMode.NAVIGATION) "Control" else "Regatta") },
-                                        onOpenTools = { goTo("Tools") }
+                                        onOpenControlOrRegatta = {
+                                            goTo(if (appMode == AppMode.NAVIGATION) "Control" else "Regatta")
+                                        },
+                                        onOpenTools = { goTo("Tools") },
+                                        onOpenSettings = {
+                                            if (appMode == AppMode.REGATTA) showRegattaSettings = true
+                                            else showSettings = true
+                                        },
+                                        onOpenSailToPort = { showSailToPort = true },
+                                        showPortInfoIcon = (startPort != null && goalPort != null),
+                                        onOpenPortInfo = {
+                                            val apikey = boat.seaRatesApiKey
+                                            val dest = goalPort ?: return@MapScreen
+                                            uiScope.launch {
+                                                loadingPortInfo = true
+                                                val info = withContext(Dispatchers.IO) {
+                                                    PortInfoService.fetchPortInfo(apikey, dest.unlocode ?: dest.name)
+                                                }
+                                                loadingPortInfo = false
+                                                if (info != null) portInfoToShow = info
+                                                else {
+                                                    // fallback minimale
+                                                    portInfoToShow = PortInfo(
+                                                        title = dest.name,
+                                                        country = dest.country,
+                                                        UNLOCODE = dest.unlocode,
+                                                        description = "Info dettagliate non disponibili.",
+                                                        website = null, phone = null, email = null, address = null
+                                                    )
+                                                }
+                                            }
+                                        }
                                     )
                                 }
+
                                 "Control" -> {
                                     Box(Modifier.fillMaxSize().background(Color.Black)) {
                                         RouteControlPanel(
@@ -265,22 +349,35 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
                                 }
+
                                 "Tools" -> {
                                     ToolsPage(
                                         path = path,
                                         unitMode = unitMode,
                                         speed = speed,
                                         onExportGpx = {
-                                            val uri = GpxExporter.exportToDownloads(this@MainActivity, "SailPilot-Route", path)
+                                            val uri = GpxExporter.exportToDownloads(
+                                                this@MainActivity,
+                                                "SailPilot-Route",
+                                                path
+                                            )
                                             Toast.makeText(
                                                 this@MainActivity,
-                                                if (uri != null) "GPX salvato in Download." else "Export GPX fallito.",
+                                                if (uri != null) "GPX salvato in Download."
+                                                else "Export GPX fallito.",
                                                 Toast.LENGTH_LONG
                                             ).show()
                                         }
                                     )
                                 }
+
                                 "Instruments" -> {
+                                    val latText = liveLatLon?.let {
+                                        (if (it.lat >= 0) "N " else "S ") + String.format("%.5f°", abs(it.lat))
+                                    }
+                                    val lonText = liveLatLon?.let {
+                                        (if (it.lon >= 0) "E " else "W ") + String.format("%.5f°", abs(it.lon))
+                                    }
                                     InstrumentPanel(
                                         headingDeg = headingDeg,
                                         sogKn = sogKn,
@@ -292,6 +389,7 @@ class MainActivity : ComponentActivity() {
                                         etaNextText = etaToWpText
                                     )
                                 }
+
                                 "Compass" -> {
                                     CompassPanel(
                                         cogDeg = cogDeg,
@@ -300,7 +398,9 @@ class MainActivity : ComponentActivity() {
                                         etaText = etaToWpText
                                     )
                                 }
+
                                 "Regatta" -> {
+                                    // versione attuale del tuo RegattaPanel (dati “generali”)
                                     RegattaPanel(
                                         sogKn = sogKn,
                                         cogDeg = cogDeg,
@@ -309,13 +409,24 @@ class MainActivity : ComponentActivity() {
                                         etaToWpText = etaToWpText
                                     )
                                 }
+
+                                "Sails" -> {
+                                    // Sail Advisor: suggerimenti vele (TWS/TWA manuali fino a collegamento strumenti)
+                                    SailAdvisorPanel(
+                                        settings = regSettings,
+                                        boatClass = selectedClass,
+                                        twsKnFromSensors = null,  // collega a DataBus quando disponibile
+                                        twaDegFromSensors = null  // collega a DataBus quando disponibile
+                                    )
+                                }
+
                                 "Connections" -> {
                                     ConnectionsPanel(appScope = uiScope)
                                 }
                             }
                         }
 
-                        // dots
+                        // puntini del pager
                         Row(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
@@ -331,7 +442,7 @@ class MainActivity : ComponentActivity() {
                                             color = if (selected) MaterialTheme.colorScheme.primary else Color.LightGray,
                                             shape = MaterialTheme.shapes.small
                                         )
-                                        .clickable { uiScope.launch { pagerState.animateScrollToPage(i) } }
+                                        .clickable { uiScopePager.launch { pagerState.animateScrollToPage(i) } }
                                 )
                             }
                         }
@@ -345,6 +456,89 @@ class MainActivity : ComponentActivity() {
                             ) { CircularProgressIndicator() }
                         }
                     }
+
+                    // --- Dialog IMPOSTAZIONI (generali) ---
+                    if (showSettings) {
+                        SettingsDialog(
+                            draftMInit = boat.draftM,
+                            lengthMInit = boat.lengthM,
+                            beamMInit = boat.beamM,
+                            seaRatesApiKeyInit = boat.seaRatesApiKey,
+                            onDismiss = { showSettings = false },
+                            onSave = { d, l, b, k ->
+                                uiScope.launch {
+                                    boatRepo.saveDraft(d); boatRepo.saveLength(l); boatRepo.saveBeam(b); boatRepo.saveApiKey(k)
+                                    showSettings = false
+                                    Toast.makeText(this@MainActivity, "Impostazioni salvate.", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        )
+                    }
+
+                    // --- Dialog IMPOSTAZIONI REGATTA ---
+                    if (showRegattaSettings) {
+                        RegattaBoatDialog(
+                            classes = boatClasses,
+                            current = regSettings,
+                            onDismiss = { showRegattaSettings = false },
+                            onSave = { s ->
+                                uiScope.launch {
+                                    regRepo.save(s)
+                                    showRegattaSettings = false
+                                    Toast.makeText(this@MainActivity, "Impostazioni Regatta salvate.", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        )
+                    }
+
+                    // --- Dialog SAIL TO PORT ---
+                    if (showSailToPort) {
+                        SailToPortDialog(
+                            ports = ports,
+                            onDismiss = { showSailToPort = false },
+                            onConfirm = { fromPort, useGps, toPort ->
+                                val s = if (useGps) {
+                                    val loc = getLastKnownLocation()
+                                    if (loc != null) LatLon(loc.latitude, loc.longitude) else null
+                                } else {
+                                    LatLon(fromPort!!.lat, fromPort.lon)
+                                }
+                                val g = LatLon(toPort.lat, toPort.lon)
+                                if (s == null) {
+                                    Toast.makeText(this@MainActivity, "Posizione GPS non disponibile.", Toast.LENGTH_LONG).show()
+                                } else {
+                                    start = s; goal = g
+                                    startPort = if (useGps) null else fromPort
+                                    goalPort = toPort
+                                    path = emptyList()
+                                    recalcRouteAsync(s, g)
+                                }
+                                showSailToPort = false
+                            }
+                        )
+                    }
+
+                    // --- Scheda INFO porto ---
+                    if (portInfoToShow != null) {
+                        val p = portInfoToShow!!
+                        AlertDialog(
+                            onDismissRequest = { portInfoToShow = null },
+                            confirmButton = { TextButton(onClick = { portInfoToShow = null }) { Text("OK") } },
+                            title = { Text("Port Info — ${p.title}") },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    if (loadingPortInfo) androidx.compose.material3.LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                    if (p.UNLOCODE != null) Text("UNLOCODE: ${p.UNLOCODE}")
+                                    if (!p.country.isNullOrBlank()) Text("Paese: ${p.country}")
+                                    if (!p.address.isNullOrBlank()) Text("Indirizzo: ${p.address}")
+                                    if (!p.phone.isNullOrBlank()) Text("Tel: ${p.phone}")
+                                    if (!p.email.isNullOrBlank()) Text("Email: ${p.email}")
+                                    if (!p.website.isNullOrBlank()) Text("Web: ${p.website}")
+                                    if (!p.description.isNullOrBlank()) Text(p.description!!)
+                                }
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -355,9 +549,9 @@ private fun initialBearing(a: LatLon, b: LatLon): Double {
     val φ1 = Math.toRadians(a.lat); val φ2 = Math.toRadians(b.lat)
     val λ1 = Math.toRadians(a.lon); val λ2 = Math.toRadians(b.lon)
     val dλ = λ2 - λ1
-    val y = sin(dλ) * cos(φ2)
-    val x = cos(φ1) * sin(φ2) - sin(φ1) * cos(φ2) * cos(dλ)
-    var deg = Math.toDegrees(atan2(y, x))
+    val y = kotlin.math.sin(dλ) * kotlin.math.cos(φ2)
+    val x = kotlin.math.cos(φ1) * kotlin.math.sin(φ2) - kotlin.math.sin(φ1) * kotlin.math.cos(φ2) * kotlin.math.cos(dλ)
+    var deg = Math.toDegrees(kotlin.math.atan2(y, x))
     if (deg < 0) deg += 360.0
     return deg
 }

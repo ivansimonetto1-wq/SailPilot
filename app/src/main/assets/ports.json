@@ -1,0 +1,14 @@
+[
+  {"name":"Genova","country":"IT","unlocode":"ITGOA","lat":44.4048,"lon":8.9339},
+  {"name":"La Spezia","country":"IT","unlocode":"ITSPE","lat":44.1030,"lon":9.8237},
+  {"name":"Livorno","country":"IT","unlocode":"ITLIV","lat":43.5550,"lon":10.3030},
+  {"name":"Civitavecchia","country":"IT","unlocode":"ITCVV","lat":42.0930,"lon":11.7909},
+  {"name":"Napoli","country":"IT","unlocode":"ITNAP","lat":40.8400,"lon":14.2700},
+  {"name":"Palermo","country":"IT","unlocode":"ITPMO","lat":38.1260,"lon":13.3686},
+  {"name":"Cagliari","country":"IT","unlocode":"ITCAG","lat":39.2076,"lon":9.1094},
+  {"name":"Ancona","country":"IT","unlocode":"ITAOI","lat":43.6170,"lon":13.5060},
+  {"name":"Ravenna","country":"IT","unlocode":"ITRAN","lat":44.4900,"lon":12.2770},
+  {"name":"Venezia","country":"IT","unlocode":"ITVCE","lat":45.4370,"lon":12.3350},
+  {"name":"Trieste","country":"IT","unlocode":"ITTRS","lat":45.6495,"lon":13.7768},
+  {"name":"Bari","country":"IT","unlocode":"ITBRI","lat":41.1300,"lon":16.8700}
+]

@@ -6,28 +6,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.MyLocation
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,13 +54,16 @@ fun MapScreen(
     isRouting: Boolean = false,
     forceLightBasemap: Boolean = false,
     onToggleForceLight: (() -> Unit)? = null,
-    // modalità e toggle
     appMode: AppMode,
     onToggleMode: () -> Unit,
-    // nuove callback di “navigazione” tra pagine
     onOpenConnections: () -> Unit,
     onOpenControlOrRegatta: () -> Unit,
     onOpenTools: () -> Unit,
+    // nuovi callback
+    onOpenSettings: () -> Unit,
+    onOpenSailToPort: () -> Unit,
+    showPortInfoIcon: Boolean,
+    onOpenPortInfo: () -> Unit
 ) {
     val ctx = LocalContext.current
 
@@ -93,7 +76,6 @@ fun MapScreen(
     Surface(color = MaterialTheme.colorScheme.background) {
         Box(Modifier.fillMaxSize()) {
 
-            // ---- MAPPA ----
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
                 factory = {
@@ -157,19 +139,11 @@ fun MapScreen(
                             setPoints(path.map { GeoPoint(it.lat, it.lon) })
                         })
                     }
-                    liveLocation?.let { ll ->
-                        mv.overlays.add(Marker(mv).apply {
-                            position = GeoPoint(ll.lat, ll.lon)
-                            title = "Posizione (live)"
-                            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                        })
-                    }
-
                     mv.invalidate()
                 }
             )
 
-            // ---- MENU ⋮ (diverso per modalità) ----
+            // MENU ⋮
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -179,12 +153,20 @@ fun MapScreen(
                     Icon(Icons.Filled.MoreVert, contentDescription = "Menu")
                 }
                 DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-
-                    // --- comune ---
                     DropdownMenuItem(
                         text = { Text("Modalità: " + if (appMode == AppMode.NAVIGATION) "Navigation" else "Regatta") },
                         leadingIcon = { Icon(Icons.Filled.Tune, contentDescription = null) },
                         onClick = { onToggleMode(); menuExpanded = false }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Impostazioni…") },
+                        leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                        onClick = { onOpenSettings(); menuExpanded = false }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Sail to Port…") },
+                        leadingIcon = { Icon(Icons.Filled.Sailing, contentDescription = null) },
+                        onClick = { onOpenSailToPort(); menuExpanded = false }
                     )
                     DropdownMenuItem(
                         text = { Text("Connessioni dati…") },
@@ -193,7 +175,6 @@ fun MapScreen(
                     )
                     DropdownMenuItem(
                         text = { Text("Velocità stimata: ${estSpeedKnots} kn") },
-                        leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
                         onClick = {
                             val list = listOf(3,4,5,6,7,8)
                             val idx = list.indexOf(estSpeedKnots).takeIf { it >= 0 } ?: 2
@@ -208,25 +189,12 @@ fun MapScreen(
                         text = { Text("Tools…") },
                         onClick = { onOpenTools(); menuExpanded = false }
                     )
-
-                    // --- specifico per modalità ---
                     if (appMode == AppMode.NAVIGATION) {
-                        DropdownMenuItem(
-                            text = { Text("Apri Control Panel") },
-                            onClick = { onOpenControlOrRegatta(); menuExpanded = false }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Ottimizza rotta") },
-                            onClick = { onOptimizeRoute(); menuExpanded = false }
-                        )
+                        DropdownMenuItem(text = { Text("Apri Control Panel") }, onClick = { onOpenControlOrRegatta(); menuExpanded = false })
+                        DropdownMenuItem(text = { Text("Ottimizza rotta") }, onClick = { onOptimizeRoute(); menuExpanded = false })
                     } else {
-                        DropdownMenuItem(
-                            text = { Text("Apri pannello Regatta") },
-                            onClick = { onOpenControlOrRegatta(); menuExpanded = false }
-                        )
-                        // spazio per future voci Regatta (laylines, starting line, polari...)
+                        DropdownMenuItem(text = { Text("Apri pannello Regatta") }, onClick = { onOpenControlOrRegatta(); menuExpanded = false })
                     }
-
                     DropdownMenuItem(
                         text = { Text("Credits") },
                         leadingIcon = { Icon(Icons.Filled.Info, contentDescription = null) },
@@ -235,13 +203,16 @@ fun MapScreen(
                 }
             }
 
-            // ---- COLONNA FAB ----
+            // FAB colonna
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                if (showPortInfoIcon) {
+                    FloatingActionButton(onClick = onOpenPortInfo) { Icon(Icons.Filled.Info, contentDescription = "Port info") }
+                }
                 FloatingActionButton(onClick = onToggleTracking) {
                     if (trackingEnabled) Icon(Icons.Filled.Stop, contentDescription = "Stop")
                     else Icon(Icons.Filled.PlayArrow, contentDescription = "Start")
@@ -276,7 +247,7 @@ fun MapScreen(
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.15f)),
                     contentAlignment = Alignment.Center
-                ) { androidx.compose.material3.CircularProgressIndicator() }
+                ) { CircularProgressIndicator() }
             }
 
             if (pickMode != PickMode.NONE) {
