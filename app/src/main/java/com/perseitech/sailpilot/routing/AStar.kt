@@ -12,13 +12,10 @@ private data class QN(val f: Double, val g: Double, val n: Node) : Comparable<QN
 
 /**
  * A* su griglia: naviga SOLO su mare (celle non-terra).
- * Richiede:
- *  - LandMask con:
- *      fun isLand(row: Int, col: Int): Boolean
- *      val cfg.rows/cols: Int
- *      fun cfg.latLonToRC(p: LatLon): Pair<Int,Int>?
- *      fun cfg.rcToLatLon(r: Int, c: Int): LatLon
- *  - GeoUtils.distanceMeters(a, b): Double
+ *
+ * - Prima prova con LAND DILATATA di 1 cella (margine sicurezza). Se fallisce, fallback alla land originale.
+ * - NO corner-cutting sulle diagonali.
+ * - Leggero bias offshore: penalizza passi molto vicini alla costa.
  */
 object AStar {
 
@@ -28,20 +25,37 @@ object AStar {
         intArrayOf( 1,  1), intArrayOf( 1, -1), intArrayOf(-1,  1), intArrayOf(-1, -1)
     )
 
-    /**
-     * Calcola il percorso evitando la terraferma. Ritorna null se non esiste.
-     */
+    // Bias offshore (in celle)
+    private const val DIST_BIAS_CELLS = 3     // distanza dalla costa entro cui applico la penalità
+    private const val BIAS_STRENGTH   = 0.22  // 0..~0.4 – più alto = più al largo
+
+    /** API pubblica: prova con safety-mask, altrimenti fallback */
     fun route(land: LandMask, start: LatLon, goal: LatLon): List<LatLon>? {
+        // 1) prova con maschera dilatata (1 cella)
+        val safety = land.dilated(1)
+        routeSingleMask(safety, start, goal)?.let { return it }
+        // 2) fallback: maschera originale (per passaggi stretti)
+        return routeSingleMask(land, start, goal)
+    }
+
+    /** A* su una singola mask. */
+    private fun routeSingleMask(land: LandMask, start: LatLon, goal: LatLon): List<LatLon>? {
         val rcS = land.cfg.latLonToRC(start) ?: return null
         val rcG = land.cfg.latLonToRC(goal)  ?: return null
         val (rs, cs) = rcS
         val (rg, cg) = rcG
 
-        // Start/goal devono cadere su mare
         if (land.isLand(rs, cs) || land.isLand(rg, cg)) return null
 
         val rows = land.cfg.rows
         val cols = land.cfg.cols
+
+        // distanza (in celle) dalla costa: serve per il bias offshore
+        val distToLand = land.distanceToLandCells()
+        fun dCells(r: Int, c: Int): Int {
+            val i = r * cols + c
+            return if (i in distToLand.indices) distToLand[i] else 0
+        }
 
         val open = PriorityQueue<QN>()
         val gScore = Array(rows) { DoubleArray(cols) { Double.POSITIVE_INFINITY } }
@@ -62,7 +76,7 @@ object AStar {
         push(rs, cs, 0.0)
 
         while (open.isNotEmpty()) {
-            val cur = open.poll()
+            val cur = open.poll() ?: break
             val r = cur.n.r
             val c = cur.n.c
 
@@ -73,20 +87,26 @@ object AStar {
                 val rr = r + d[0]
                 val cc = c + d[1]
                 if (rr !in 0 until rows || cc !in 0 until cols) continue
-                if (land.isLand(rr, cc)) continue  // target cell must be sea
+                if (land.isLand(rr, cc)) continue
 
-                // Evita “corner cutting” su diagonali:
+                // Anti corner-cutting sulle diagonali
                 val diag = d[0] != 0 && d[1] != 0
                 if (diag) {
-                    val rSide = r + d[0]
-                    val cSide = c + d[1]
-                    // se una delle adiacenti ortogonali è terra, vieta il diagonale
-                    if (land.isLand(r, cSide) || land.isLand(rSide, c)) continue
+                    if (land.isLand(r, cc) || land.isLand(rr, c)) continue
                 }
 
                 val a = land.cfg.rcToLatLon(r, c)
                 val b = land.cfg.rcToLatLon(rr, cc)
-                val step = GeoUtils.distanceMeters(a, b) // costo = distanza reale
+                var step = GeoUtils.distanceMeters(a, b) // costo base = distanza reale
+
+                // Bias offshore: penalizza vicinanza costa
+                if (BIAS_STRENGTH > 0.0) {
+                    val dHere = dCells(rr, cc)
+                    if (dHere in 1..DIST_BIAS_CELLS) {
+                        val factor = 1.0 + BIAS_STRENGTH * (DIST_BIAS_CELLS - dHere + 1).toDouble() / DIST_BIAS_CELLS
+                        step *= factor
+                    }
+                }
 
                 val ng = cur.g + step
                 if (ng < gScore[rr][cc]) {
@@ -100,19 +120,19 @@ object AStar {
 
         if (gScore[rg][cg].isInfinite()) return null
 
-        // ricostruzione path (da goal a start)
-        val rcPath = ArrayList<Node>()
+        // ricostruzione
+        val path = ArrayList<Node>()
         var cr = rg
         var cc = cg
         while (cr != -1 && cc != -1) {
-            rcPath.add(Node(cr, cc))
+            path.add(Node(cr, cc))
             val pr = cameR[cr][cc]
             val pc = cameC[cr][cc]
             cr = pr
             cc = pc
         }
-        rcPath.reverse()
+        path.reverse()
 
-        return rcPath.map { land.cfg.rcToLatLon(it.r, it.c) }
+        return path.map { land.cfg.rcToLatLon(it.r, it.c) }
     }
 }

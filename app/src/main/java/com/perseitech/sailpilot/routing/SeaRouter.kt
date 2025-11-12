@@ -1,42 +1,63 @@
 package com.perseitech.sailpilot.routing
 
-import android.util.Log
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.min
 
-/**
- * Router principale: costruisce la griglia dalla BBox, rasterizza il WKT su LandMask,
- * "aggancia" start/goal al mare se cadono su terra e lancia l'A*.
- */
 class SeaRouter {
 
+    companion object {
+        private const val MAX_CELLS = 1_200_000
+        private const val UPSCALE_FACTOR = 1.25
+        private const val MAX_UPSCALES = 6
+    }
+
+    /**
+     * @param depthProvider opzionale: se presente, evita profondità < [minDepthMeters]
+     * @param minDepthMeters soglia minima (m). Ignorata se depthProvider = null.
+     */
     fun route(
         landWkt: String,
         start: LatLon,
         goal: LatLon,
         bbox: BBox,
-        padMeters: Double = 400.0,
-        targetCellMeters: Double = 200.0
+        padMeters: Double,
+        targetCellMeters: Double,
+        depthProvider: DepthProvider? = null,
+        minDepthMeters: Double = 2.0
     ): List<LatLon>? {
-        Log.i(TAG, "SeaRouter.route: WKT bytes=${landWkt.length}")
+        var cell = targetCellMeters
+        var attempt = 0
+        var cfg: GridConfig
 
-        // 1) Config griglia + LandMask dal WKT
-        val cfg  = GridConfig.build(bbox, padMeters, targetCellMeters)
-        val land = LandMaskBuilder.fromWkt(landWkt, cfg)
-
-        // 2) Snap a mare se i punti cadono su terra
-        val sSea = if (land.isLand(start)) SnapToSea.snap(start, land) else start
-        val gSea = if (land.isLand(goal))  SnapToSea.snap(goal,  land) else goal
-
-        // 3) A* su griglia acqua
-        val rawPath = AStar.route(land, sSea, gSea)
-        if (rawPath == null) {
-            Log.w(TAG, "A* non ha trovato un percorso")
-            return null
+        while (true) {
+            cfg = GridConfig.fromBBox(bbox, padMeters, cell)
+            val estCells = cfg.rows.toLong() * cfg.cols.toLong()
+            if (estCells <= MAX_CELLS || attempt >= MAX_UPSCALES) break
+            cell *= UPSCALE_FACTOR
+            attempt++
         }
 
-        // 4) (opzionale) Densificazione post-process (se hai un PathPost; altrimenti restituisci rawPath)
-        // return PathPost.densify(rawPath, maxSpacingMeters = targetCellMeters / 2)
-        return rawPath
-    }
+        var mask = LandMaskBuilder.fromWkt(landWkt, cfg)
+        // se c'è un provider batimetrico, “aggiungi” acque basse come se fossero terra
+        mask = mask.withShallowAsLand(depthProvider, minDepthMeters)
 
-    companion object { private const val TAG = "SeaRouter" }
+        val raw = AStar.route(mask, start, goal) ?: return null
+
+        val lat0 = cfg.bbox.center.lat.coerceIn(-89.0, 89.0)
+        val mPerDegLat = 111_132.0
+        val mPerDegLon = 111_320.0 * cos(lat0 * PI / 180.0)
+        val cellLatM = cfg.stepLatDeg * mPerDegLat
+        val cellLonM = cfg.stepLonDeg * mPerDegLon
+        val cellM = min(cellLatM, cellLonM)
+
+        val tol = 1.6 * cellM
+        val sample = 0.5 * cellM
+
+        val simplified = PathPost.simplifyRouteSafe(raw, mask.dilated(1), tolMeters = tol, sampleStepMeters = sample)
+        val smoothed = PathPost.smoothChaikinSafe(
+            route = simplified, land = mask.dilated(1), iters = 1, alpha = 0.25, sampleStepMeters = sample, keepEndpoints = true
+        )
+        return smoothed
+    }
 }

@@ -5,7 +5,7 @@ package com.perseitech.sailpilot.routing
  * dentro una BBox (con pad) e risoluzione desiderata (targetCellMeters).
  *
  * Dipendenze attese:
- * - GridConfig.build(raw: BBox, padMeters: Double, targetCellMeters: Double): GridConfig
+ * - GridConfig.fromBBox(raw: BBox, padMeters: Double, targetCellMeters: Double): GridConfig
  * - LandMaskBuilder.fromWkt(landWkt: String, cfg: GridConfig): LandMask
  */
 object CoastalMaskFactory {
@@ -21,7 +21,7 @@ object CoastalMaskFactory {
         padMeters: Double,
         targetCellMeters: Double
     ): LandMask {
-        val cfg = GridConfig.build(bbox, padMeters, targetCellMeters)
+        val cfg = GridConfig.fromBBox(bbox, padMeters, targetCellMeters)
         return LandMaskBuilder.fromWkt(landWkt, cfg)
     }
 }
