@@ -10,11 +10,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -60,10 +62,35 @@ class MainActivity : ComponentActivity() {
         Configuration.getInstance().userAgentValue = "SailPilot/1.0 (osmdroid)"
 
         setContent {
-            MaterialTheme {
-                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            val ctx = LocalContext.current
 
-                    val ctx = LocalContext.current
+            // App UI settings (tema chiaro/scuro + accento)
+            val appUiRepo = remember { AppUiSettingsRepository(this@MainActivity) }
+            val appUi by appUiRepo.flow.collectAsState(initial = AppUiSettings())
+
+            val colorScheme = if (appUi.darkTheme) {
+                val primary = when (appUi.nightAccent) {
+                    NightAccent.RED   -> Color(0xFFFF4444)
+                    NightAccent.GREEN -> Color(0xFF00E676)
+                }
+                darkColorScheme(
+                    primary = primary,
+                    onPrimary = Color.Black,
+                    secondary = Color(0xFF90CAF9),
+                    background = Color(0xFF000814),
+                    surface = Color(0xFF001322)
+                )
+            } else {
+                lightColorScheme(
+                    primary = Color(0xFF01579B),
+                    secondary = Color(0xFF00BCD4),
+                    background = Color(0xFFE0F7FA),
+                    surface = Color(0xFFFFFFFF)
+                )
+            }
+
+            MaterialTheme(colorScheme = colorScheme) {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
 
                     // Regatta settings (classe + countdown)
                     val regattaRepo = remember { RegattaSettingsRepository(this@MainActivity) }
@@ -74,17 +101,32 @@ class MainActivity : ComponentActivity() {
                     val isafCountdownEnabled = regatta.isafCountdownEnabled
                     var showRegattaSettings by remember { mutableStateOf(false) }
 
+                    // Splash / selezione iniziale modalità
+                    var hasSelectedMode by rememberSaveable { mutableStateOf(false) }
+                    var appMode by remember { mutableStateOf(AppMode.NAVIGATION) }
+                    val toggleMode = {
+                        appMode = if (appMode == AppMode.NAVIGATION) AppMode.REGATTA else AppMode.NAVIGATION
+                    }
+
+                    if (!hasSelectedMode) {
+                        ModeSelectionScreen(
+                            onSelectNavigation = {
+                                appMode = AppMode.NAVIGATION
+                                hasSelectedMode = true
+                            },
+                            onSelectRegatta = {
+                                appMode = AppMode.REGATTA
+                                hasSelectedMode = true
+                            }
+                        )
+                        return@Surface
+                    }
+
                     // -------- Stato rotta / mappa --------
                     var start by remember { mutableStateOf<LatLon?>(null) }
                     var goal by remember { mutableStateOf<LatLon?>(null) }
                     var path by remember { mutableStateOf<List<LatLon>>(emptyList()) }
                     var pickMode by remember { mutableStateOf(PickMode.NONE) }
-
-                    // Modalità app
-                    var appMode by remember { mutableStateOf(AppMode.NAVIGATION) }
-                    val toggleMode = {
-                        appMode = if (appMode == AppMode.NAVIGATION) AppMode.REGATTA else AppMode.NAVIGATION
-                    }
 
                     // Tracking / GPS locale
                     var trackingEnabled by remember { mutableStateOf(false) }
@@ -128,9 +170,10 @@ class MainActivity : ComponentActivity() {
                         value = PortsRepository.loadPorts(this@MainActivity)
                     }
 
-                    // Dialogs / info porto
+                    // Dialogs / info porto / tema
                     var showSettings by remember { mutableStateOf(false) }
                     var showSailToPort by remember { mutableStateOf(false) }
+                    var showAppTheme by remember { mutableStateOf(false) }
                     var startPort by remember { mutableStateOf<Port?>(null) }
                     var goalPort by remember { mutableStateOf<Port?>(null) }
                     var portInfoToShow by remember { mutableStateOf<PortInfo?>(null) }
@@ -218,7 +261,11 @@ class MainActivity : ComponentActivity() {
                     }
 
                     Box(Modifier.fillMaxSize()) {
-                        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+                        HorizontalPager(
+                            state = pagerState,
+                            modifier = Modifier.fillMaxSize(),
+                            userScrollEnabled = false   // niente swipe orizzontale, così la mappa scorre libera
+                        ) { page ->
                             when (titles[page]) {
                                 "Mappa" -> MapScreen(
                                     start = start,
@@ -283,6 +330,7 @@ class MainActivity : ComponentActivity() {
                                     onOpenSettings = { showSettings = true },
                                     onOpenSailToPort = { showSailToPort = true },
                                     onOpenRegattaSettings = { showRegattaSettings = true },
+                                    onOpenAppTheme = { showAppTheme = true },
                                     showPortInfoIcon = (startPort != null && goalPort != null),
                                     onOpenPortInfo = {
                                         val apikey = boat.seaRatesApiKey
@@ -393,6 +441,29 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
+                        // pallini in basso
+                        Row(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            repeat(titles.size) { i ->
+                                val selected = pagerState.currentPage == i
+                                Box(
+                                    modifier = Modifier
+                                        .size(if (selected) 10.dp else 8.dp)
+                                        .background(
+                                            color = if (selected) MaterialTheme.colorScheme.primary else Color.LightGray,
+                                            shape = MaterialTheme.shapes.small
+                                        )
+                                        .clickable {
+                                            pagerScope.launch { pagerState.animateScrollToPage(i) }
+                                        }
+                                )
+                            }
+                        }
+
                         if (isRouting) {
                             Box(
                                 modifier = Modifier
@@ -403,7 +474,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // --- Dialog IMPOSTAZIONI ---
+                    // --- Dialog IMPOSTAZIONI BARCA ---
                     if (showSettings) {
                         SettingsDialog(
                             draftMInit = boat.draftM,
@@ -455,6 +526,19 @@ class MainActivity : ComponentActivity() {
                                     recalcRouteAsync(s, g)
                                 }
                                 showSailToPort = false
+                            }
+                        )
+                    }
+
+                    // --- Dialog TEMA APP ---
+                    if (showAppTheme) {
+                        AppThemeDialog(
+                            current = appUi,
+                            onDismiss = { showAppTheme = false },
+                            onSave = { dark, accent ->
+                                appUiRepo.saveDarkTheme(dark)
+                                appUiRepo.saveNightAccent(accent)
+                                showAppTheme = false
                             }
                         )
                     }

@@ -63,6 +63,7 @@ fun MapScreen(
     onOpenSettings: () -> Unit,
     onOpenSailToPort: () -> Unit,
     onOpenRegattaSettings: () -> Unit,
+    onOpenAppTheme: () -> Unit,
     showPortInfoIcon: Boolean,
     onOpenPortInfo: () -> Unit
 ) {
@@ -168,7 +169,12 @@ fun MapScreen(
                         onClick = { onToggleMode(); menuExpanded = false }
                     )
                     DropdownMenuItem(
-                        text = { Text("Impostazioni…") },
+                        text = { Text("Tema app…") },
+                        leadingIcon = { Icon(Icons.Filled.FormatPaint, contentDescription = null) },
+                        onClick = { onOpenAppTheme(); menuExpanded = false }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Impostazioni barca…") },
                         leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
                         onClick = { onOpenSettings(); menuExpanded = false }
                     )
