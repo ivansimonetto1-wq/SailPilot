@@ -20,6 +20,7 @@ import com.perseitech.sailpilot.routing.LatLon
 import com.perseitech.sailpilot.tiles.LightBaseMap
 import com.perseitech.sailpilot.tiles.Seamarks
 import org.osmdroid.events.MapEventsReceiver
+import org.osmdroid.tileprovider.tilesource.ITileSource
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
@@ -59,9 +60,9 @@ fun MapScreen(
     onOpenConnections: () -> Unit,
     onOpenControlOrRegatta: () -> Unit,
     onOpenTools: () -> Unit,
-    // nuovi callback
     onOpenSettings: () -> Unit,
     onOpenSailToPort: () -> Unit,
+    onOpenRegattaSettings: () -> Unit,
     showPortInfoIcon: Boolean,
     onOpenPortInfo: () -> Unit
 ) {
@@ -71,7 +72,6 @@ fun MapScreen(
     var seamarksOverlay by remember { mutableStateOf<TilesOverlay?>(null) }
     var menuExpanded by remember { mutableStateOf(false) }
     var showCredits by remember { mutableStateOf(false) }
-    var mapView by remember { mutableStateOf<MapView?>(null) }
 
     Surface(color = MaterialTheme.colorScheme.background) {
         Box(Modifier.fillMaxSize()) {
@@ -102,18 +102,19 @@ fun MapScreen(
                                 return true
                             }
                         }))
-
-                        mapView = this
                     }
                 },
                 update = { mv ->
-                    val target = if (forceLightBasemap) LightBaseMap else TileSourceFactory.MAPNIK
-                    if (mv.tileProvider.tileSource.name() != target.name()) mv.setTileSource(target)
+                    val target: ITileSource = if (forceLightBasemap) LightBaseMap else TileSourceFactory.MAPNIK
+                    if (mv.tileProvider.tileSource != target) mv.setTileSource(target)
 
                     if (seamarksEnabled && seamarksOverlay == null) {
-                        val ov = Seamarks.buildOverlay(ctx); mv.overlays.add(ov); seamarksOverlay = ov
+                        val ov = Seamarks.buildOverlay(ctx)
+                        mv.overlays.add(ov)
+                        seamarksOverlay = ov
                     } else if (!seamarksEnabled && seamarksOverlay != null) {
-                        mv.overlays.remove(seamarksOverlay); seamarksOverlay = null
+                        mv.overlays.remove(seamarksOverlay)
+                        seamarksOverlay = null
                     }
 
                     mv.overlays.removeAll { it is Marker || it is Polyline }
@@ -132,6 +133,13 @@ fun MapScreen(
                             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
                         })
                     }
+                    liveLocation?.let { ll ->
+                        mv.overlays.add(Marker(mv).apply {
+                            position = GeoPoint(ll.lat, ll.lon)
+                            title = "Boat"
+                            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                        })
+                    }
                     if (path.size > 1) {
                         mv.overlays.add(Polyline().apply {
                             outlinePaint.color = Color.RED
@@ -139,6 +147,7 @@ fun MapScreen(
                             setPoints(path.map { GeoPoint(it.lat, it.lon) })
                         })
                     }
+
                     mv.invalidate()
                 }
             )
@@ -176,7 +185,7 @@ fun MapScreen(
                     DropdownMenuItem(
                         text = { Text("Velocità stimata: ${estSpeedKnots} kn") },
                         onClick = {
-                            val list = listOf(3,4,5,6,7,8)
+                            val list = listOf(3, 4, 5, 6, 7, 8)
                             val idx = list.indexOf(estSpeedKnots).takeIf { it >= 0 } ?: 2
                             onChangeSpeed(list[(idx + 1) % list.size]); menuExpanded = false
                         }
@@ -190,10 +199,24 @@ fun MapScreen(
                         onClick = { onOpenTools(); menuExpanded = false }
                     )
                     if (appMode == AppMode.NAVIGATION) {
-                        DropdownMenuItem(text = { Text("Apri Control Panel") }, onClick = { onOpenControlOrRegatta(); menuExpanded = false })
-                        DropdownMenuItem(text = { Text("Ottimizza rotta") }, onClick = { onOptimizeRoute(); menuExpanded = false })
+                        DropdownMenuItem(
+                            text = { Text("Apri Control Panel") },
+                            onClick = { onOpenControlOrRegatta(); menuExpanded = false }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Ottimizza rotta") },
+                            onClick = { onOptimizeRoute(); menuExpanded = false }
+                        )
                     } else {
-                        DropdownMenuItem(text = { Text("Apri pannello Regatta") }, onClick = { onOpenControlOrRegatta(); menuExpanded = false })
+                        DropdownMenuItem(
+                            text = { Text("Apri pannello Regatta") },
+                            onClick = { onOpenControlOrRegatta(); menuExpanded = false }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Regatta settings…") },
+                            leadingIcon = { Icon(Icons.Filled.Flag, contentDescription = null) },
+                            onClick = { onOpenRegattaSettings(); menuExpanded = false }
+                        )
                     }
                     DropdownMenuItem(
                         text = { Text("Credits") },
@@ -211,7 +234,9 @@ fun MapScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 if (showPortInfoIcon) {
-                    FloatingActionButton(onClick = onOpenPortInfo) { Icon(Icons.Filled.Info, contentDescription = "Port info") }
+                    FloatingActionButton(onClick = onOpenPortInfo) {
+                        Icon(Icons.Filled.Info, contentDescription = "Port info")
+                    }
                 }
                 FloatingActionButton(onClick = onToggleTracking) {
                     if (trackingEnabled) Icon(Icons.Filled.Stop, contentDescription = "Stop")
@@ -221,10 +246,18 @@ fun MapScreen(
                     if (seamarksEnabled) Icon(Icons.Filled.VisibilityOff, contentDescription = "Hide seamarks")
                     else Icon(Icons.Filled.Visibility, contentDescription = "Show seamarks")
                 }
-                FloatingActionButton(onClick = onOptimizeRoute) { Icon(Icons.Filled.Build, contentDescription = "Ottimizza") }
-                FloatingActionButton(onClick = onRequestPickStart) { Icon(Icons.Filled.ArrowUpward, contentDescription = "Pick start") }
-                FloatingActionButton(onClick = onClearRoute) { Icon(Icons.Filled.Delete, contentDescription = "Clear") }
-                FloatingActionButton(onClick = onRequestGpsStart) { Icon(Icons.Filled.MyLocation, contentDescription = "From GPS") }
+                FloatingActionButton(onClick = onOptimizeRoute) {
+                    Icon(Icons.Filled.Build, contentDescription = "Ottimizza")
+                }
+                FloatingActionButton(onClick = onRequestPickStart) {
+                    Icon(Icons.Filled.ArrowUpward, contentDescription = "Pick start")
+                }
+                FloatingActionButton(onClick = onClearRoute) {
+                    Icon(Icons.Filled.Delete, contentDescription = "Clear")
+                }
+                FloatingActionButton(onClick = onRequestGpsStart) {
+                    Icon(Icons.Filled.MyLocation, contentDescription = "From GPS")
+                }
             }
 
             if (showCredits) {

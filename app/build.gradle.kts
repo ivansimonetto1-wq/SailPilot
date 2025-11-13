@@ -69,6 +69,9 @@ dependencies {
     // WebSocket Signal K
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    implementation("com.squareup.okhttp3:okhttp:4.11.0")
+
+
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 

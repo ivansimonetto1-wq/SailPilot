@@ -1,100 +1,134 @@
 package com.perseitech.sailpilot.io.signalk
 
+import android.util.Log
 import com.perseitech.sailpilot.io.DataBus
-import com.perseitech.sailpilot.io.DataBus.Source
-import com.perseitech.sailpilot.io.NavData
-import com.perseitech.sailpilot.routing.LatLon
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 import okhttp3.*
 import okio.ByteString
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
-/**
- * Client Signal K via WebSocket.
- * Esempi URL: ws://host:3000/signalk/v1/stream?subscribe=self
- * Auth opzionale: token Bearer (Signal K access token).
- */
 class SignalKClient(
-    private val wsUrl: String,
-    private val bearerToken: String? = null
-) : WebSocketListener() {
-
-    private var ws: WebSocket? = null
+    private val url: String,
+    private val token: String? = null
+) {
     private var client: OkHttpClient? = null
-    private var scope: CoroutineScope? = null
+    private var ws: WebSocket? = null
 
-    fun start(scope: CoroutineScope) {
-        stop()
-        this.scope = scope
-        client = OkHttpClient.Builder()
+    fun start() {
+        val c = OkHttpClient.Builder()
             .pingInterval(15, TimeUnit.SECONDS)
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .retryOnConnectionFailure(true)
             .build()
-        val reqBuilder = Request.Builder().url(wsUrl)
-        bearerToken?.let { reqBuilder.addHeader("Authorization", "Bearer $it") }
-        val req = reqBuilder.build()
-        ws = client!!.newWebSocket(req, this)
+        client = c
+
+        val reqBuilder = Request.Builder().url(url)
+        if (!token.isNullOrBlank()) reqBuilder.addHeader("Authorization", "Bearer $token")
+        val request = reqBuilder.build()
+
+        ws = c.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                Log.d(TAG, "SignalK open: ${response.code}")
+                // Subscribe paths (alcuni server non richiedono questo messaggio)
+                val sub = JSONObject().apply {
+                    put("context", "vessels.self")
+                    put("subscribe", JSONArray().apply {
+                        put(JSONObject(mapOf("path" to "navigation.speedOverGround", "period" to 1000)))
+                        put(JSONObject(mapOf("path" to "navigation.courseOverGroundTrue", "period" to 1000)))
+                        put(JSONObject(mapOf("path" to "navigation.headingTrue", "period" to 1000)))
+                        put(JSONObject(mapOf("path" to "environment.wind.speedTrue", "period" to 1000)))
+                        put(JSONObject(mapOf("path" to "environment.wind.directionTrue", "period" to 1000)))
+                        put(JSONObject(mapOf("path" to "environment.depth.belowTransducer", "period" to 2000)))
+                        put(JSONObject(mapOf("path" to "navigation.position", "period" to 1000)))
+                    })
+                }
+                webSocket.send(sub.toString())
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) = parseDelta(text)
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) = parseDelta(bytes.utf8())
+        })
     }
 
     fun stop() {
-        ws?.close(1000, "bye"); ws = null
+        try { ws?.close(1000, "stop") } catch (_: Throwable) {}
+        ws = null
         client?.dispatcher?.executorService?.shutdown()
+        client?.connectionPool?.evictAll()
         client = null
-        scope?.cancel(); scope = null
     }
 
-    override fun onMessage(webSocket: WebSocket, text: String) {
-        try {
-            val js = JSONObject(text)
-            val updates = js.optJSONArray("updates") ?: return
+    private fun parseDelta(json: String) {
+        runCatching {
+            val root = JSONObject(json)
+            val updates = root.optJSONArray("updates") ?: return
             for (i in 0 until updates.length()) {
                 val u = updates.getJSONObject(i)
                 val values = u.optJSONArray("values") ?: continue
-                var pos: LatLon? = null
-                var sogKn: Double? = null
-                var cogDeg: Double? = null
-                var hdgDeg: Double? = null
-                var depthM: Double? = null
                 for (k in 0 until values.length()) {
                     val v = values.getJSONObject(k)
-                    val path = v.optString("path", "")
-                    val value = v.opt("value")
-                    when (path) {
-                        "navigation.position" -> {
-                            val p = value as? JSONObject ?: continue
-                            val lat = p.optDouble("latitude", Double.NaN)
-                            val lon = p.optDouble("longitude", Double.NaN)
-                            if (!lat.isNaN() && !lon.isNaN()) pos = LatLon(lat, lon)
-                        }
+                    when (v.optString("path")) {
                         "navigation.speedOverGround" -> {
-                            val mps = (value as? Number)?.toDouble()
-                            if (mps != null) sogKn = mps * 1.9438445
+                            val mps = v.opt("value").toString().toDoubleOrNull()
+                            val kn = mps?.times(1.943844)
+                            if (kn != null) DataBus.mergeCogSog(null, kn)
                         }
                         "navigation.courseOverGroundTrue" -> {
-                            val rad = (value as? Number)?.toDouble()
-                            if (rad != null) cogDeg = Math.toDegrees(rad)
+                            val radOrDeg = v.opt("value")
+                            val deg = when (radOrDeg) {
+                                is Number -> {
+                                    val n = radOrDeg.toDouble()
+                                    if (n <= 2 * Math.PI) Math.toDegrees(n) else n
+                                }
+                                else -> radOrDeg.toString().toDoubleOrNull()
+                            }?.let { ((it % 360) + 360) % 360 }
+                            if (deg != null) DataBus.mergeCogSog(deg, null)
                         }
                         "navigation.headingTrue" -> {
-                            val rad = (value as? Number)?.toDouble()
-                            if (rad != null) hdgDeg = Math.toDegrees(rad)
+                            val radOrDeg = v.opt("value")
+                            val deg = when (radOrDeg) {
+                                is Number -> {
+                                    val n = radOrDeg.toDouble()
+                                    if (n <= 2 * Math.PI) Math.toDegrees(n) else n
+                                }
+                                else -> radOrDeg.toString().toDoubleOrNull()
+                            }?.let { ((it % 360) + 360) % 360 }
+                            if (deg != null) DataBus.mergeHeading(deg)
+                        }
+                        "navigation.position" -> {
+                            val obj = v.optJSONObject("value") ?: continue
+                            val lat = obj.optDouble("latitude")
+                            val lon = obj.optDouble("longitude")
+                            if (!lat.isNaN() && !lon.isNaN()) {
+                                DataBus.updatePosition(com.perseitech.sailpilot.routing.LatLon(lat, lon))
+                            }
+                        }
+                        "environment.wind.speedTrue" -> {
+                            val mps = v.opt("value").toString().toDoubleOrNull()
+                            val kn = mps?.times(1.943844)
+                            if (kn != null) DataBus.mergeTrueWind(kn, null, null)
+                        }
+                        "environment.wind.directionTrue" -> {
+                            val radOrDeg = v.opt("value")
+                            val deg = when (radOrDeg) {
+                                is Number -> {
+                                    val n = radOrDeg.toDouble()
+                                    if (n <= 2 * Math.PI) Math.toDegrees(n) else n
+                                }
+                                else -> radOrDeg.toString().toDoubleOrNull()
+                            }?.let { ((it % 360) + 360) % 360 }
+                            if (deg != null) DataBus.mergeTrueWind(null, deg, null)
                         }
                         "environment.depth.belowTransducer" -> {
-                            val m = (value as? Number)?.toDouble()
-                            if (m != null) depthM = m
+                            val m = v.opt("value").toString().toDoubleOrNull()
+                            if (m != null) DataBus.mergeDepth(m)
                         }
                     }
                 }
-                if (pos != null || sogKn != null || cogDeg != null || hdgDeg != null || depthM != null) {
-                    DataBus.apply(Source.SIGNAL_K, NavData(position = pos, sogKn = sogKn, cogDeg = cogDeg, headingDeg = hdgDeg, depthM = depthM))
-                }
             }
-        } catch (_: Exception) { /* ignora delta non parsabili */ }
+        }
     }
 
-    override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-        onMessage(webSocket, bytes.utf8())
-    }
+    companion object { private const val TAG = "SignalKClient" }
 }

@@ -1,128 +1,125 @@
 package com.perseitech.sailpilot.io.nmea
 
-import com.perseitech.sailpilot.io.DataBus
-import com.perseitech.sailpilot.io.DataBus.Source
-import com.perseitech.sailpilot.io.NavData
 import com.perseitech.sailpilot.routing.LatLon
+import kotlin.math.abs
 
 /**
- * Parser essenziale NMEA0183.
- * Frasi supportate:
- *  - RMC: pos, sog, cog
- *  - GLL: pos
- *  - HDG/HDM/HDT: heading
- *  - VHW: sog (speed water; usata come fallback)
- *  - MWV: vento apparente (angolo/speed)
- *  - DBT: profondità
- *  - XTE: cross-track error (non pubblicato nel bus NavData per ora)
- *  - RMB: distanza/rotta WP (qui non pubblichiamo; la rotta app già la conosce)
+ * Parser minimale per le frasi usate più spesso.
+ * Non verifica checksum (si può aggiungere facilmente).
  */
 object Nmea0183Parser {
 
-    fun feed(lineRaw: String) {
-        val line = lineRaw.trim().removeSuffix("\r")
-        if (line.isEmpty()) return
-        if (!line.startsWith("\$") && !line.startsWith("!")) return
-
-        val star = line.lastIndexOf('*')
+    fun parse(line: String): Result {
+        if (!line.startsWith("$")) return Result()
+        val star = line.indexOf('*')
         val body = if (star > 0) line.substring(1, star) else line.substring(1)
-        val fields = body.split(',')
-        if (fields.isEmpty()) return
+        val f = body.split(',')
+        val talker = body.take(2)
+        val type = body.dropWhile { it != ',' }.let { if (it.isNotEmpty()) f.firstOrNull()?.takeLast(3) else null } // grezzo
 
-        val talkerType = fields[0]          // es. GPRMC, IIMWV, HCHDG
-        val type = talkerType.takeLast(3).uppercase()
-
-        when (type) {
-            "RMC" -> parseRMC(fields)
-            "GLL" -> parseGLL(fields)
-            "HDG", "HDM", "HDT" -> parseHDx(fields, type)
-            "VHW" -> parseVHW(fields)
-            "MWV" -> parseMWV(fields)
-            "DBT" -> parseDBT(fields)
-            "XTE" -> parseXTE(fields) // (tenuto per future UI)
-            "RMB" -> parseRMB(fields) // (tenuto per future UI)
+        // Meglio: controlla prefissi del body
+        return when {
+            body.contains("GGA") -> parseGGA(f)
+            body.contains("GLL") -> parseGLL(f)
+            body.contains("RMC") -> parseRMC(f)
+            body.contains("VTG") -> parseVTG(f)
+            body.contains("HDT") -> parseHDT(f)
+            body.contains("HDG") -> parseHDG(f)
+            body.contains("MWV") -> parseMWV(f)
+            body.contains("DBT") -> parseDBT(f)
+            else -> Result()
         }
     }
 
-    private fun parseRMC(f: List<String>) {
-        // $--RMC,hhmmss.sss,A,llll.ll,a,yyyyy.yy,a,x.x,x.x,ddmmyy,x.x,a*hh
-        if (f.size < 12) return
-        val status = f[2]
-        if (status != "A") return
-        val lat = parseLat(f.getOrNull(3), f.getOrNull(4)) ?: return
-        val lon = parseLon(f.getOrNull(5), f.getOrNull(6)) ?: return
-        val sogKn = f.getOrNull(7)?.toDoubleOrNull()
-        val cogDeg = f.getOrNull(8)?.toDoubleOrNull()
-        DataBus.apply(Source.NMEA_0183, NavData(position = LatLon(lat, lon), sogKn = sogKn, cogDeg = cogDeg))
+    data class Result(
+        val position: LatLon? = null,
+        val cogDeg: Double? = null,
+        val sogKn: Double? = null,
+        val headingDeg: Double? = null,
+        val twsKn: Double? = null,
+        val twdDeg: Double? = null,
+        val twaDeg: Double? = null,
+        val depthM: Double? = null
+    )
+
+    private fun dmmToDeg(dmm: String, hemi: String?): Double? {
+        // ddmm.mmmm or dddmm.mmmm
+        if (dmm.isBlank()) return null
+        val dot = dmm.indexOf('.')
+        val mStart = (dot - 2).coerceAtLeast(0)
+        val deg = dmm.substring(0, mStart).toIntOrNull() ?: return null
+        val min = dmm.substring(mStart).toDoubleOrNull() ?: return null
+        var out = deg + (min / 60.0)
+        if (hemi != null && (hemi.equals("S", true) || hemi.equals("W", true))) out = -out
+        return out
     }
 
-    private fun parseGLL(f: List<String>) {
-        // $--GLL,llll.ll,a,yyyyy.yy,a,hhmmss.ss,A
-        if (f.size < 7) return
-        val status = f.getOrNull(6)
-        if (status != "A") return
-        val lat = parseLat(f.getOrNull(1), f.getOrNull(2)) ?: return
-        val lon = parseLon(f.getOrNull(3), f.getOrNull(4)) ?: return
-        DataBus.apply(Source.NMEA_0183, NavData(position = LatLon(lat, lon)))
-    }
+    private fun parseRMC(f: List<String>) = Result(
+        position = runCatching {
+            val lat = dmmToDeg(f.getOrNull(3) ?: "", f.getOrNull(4))
+            val lon = dmmToDeg(f.getOrNull(5) ?: "", f.getOrNull(6))
+            if (lat != null && lon != null) LatLon(lat, lon) else null
+        }.getOrNull(),
+        sogKn = f.getOrNull(7)?.toDoubleOrNull(),
+        cogDeg = f.getOrNull(8)?.toDoubleOrNull()
+    )
 
-    private fun parseHDx(f: List<String>, type: String) {
-        // HDG: $--HDG,x.x, ... | HDM: $--HDM,x.x | HDT: $--HDT,x.x,T
-        val v = f.getOrNull(1)?.toDoubleOrNull() ?: return
-        DataBus.apply(Source.NMEA_0183, NavData(headingDeg = v))
-    }
+    private fun parseVTG(f: List<String>) = Result(
+        cogDeg = f.getOrNull(1)?.toDoubleOrNull(),
+        sogKn = f.getOrNull(7)?.toDoubleOrNull()
+    )
 
-    private fun parseVHW(f: List<String>) {
-        // $--VHW,x.x,T,x.x,M,x.x,N,x.x,K
-        val sogKn = f.getOrNull(7)?.toDoubleOrNull()
-        if (sogKn != null) DataBus.apply(Source.NMEA_0183, NavData(sogKn = sogKn))
-    }
+    private fun parseGGA(f: List<String>) = Result(
+        position = runCatching {
+            val lat = dmmToDeg(f.getOrNull(2) ?: "", f.getOrNull(3))
+            val lon = dmmToDeg(f.getOrNull(4) ?: "", f.getOrNull(5))
+            if (lat != null && lon != null) LatLon(lat, lon) else null
+        }.getOrNull()
+    )
 
-    private fun parseMWV(f: List<String>) {
-        // $--MWV,angle,ref,speed,unit,status
-        val angle = f.getOrNull(1)?.toDoubleOrNull()
-        val speed = f.getOrNull(3)?.toDoubleOrNull()
-        val unit = f.getOrNull(4)
+    private fun parseGLL(f: List<String>) = Result(
+        position = runCatching {
+            val lat = dmmToDeg(f.getOrNull(1) ?: "", f.getOrNull(2))
+            val lon = dmmToDeg(f.getOrNull(3) ?: "", f.getOrNull(4))
+            if (lat != null && lon != null) LatLon(lat, lon) else null
+        }.getOrNull()
+    )
+
+    private fun parseHDT(f: List<String>) = Result(
+        headingDeg = f.getOrNull(1)?.toDoubleOrNull()
+    )
+
+    private fun parseHDG(f: List<String>) = Result(
+        headingDeg = f.getOrNull(1)?.toDoubleOrNull()
+    )
+
+    private fun parseMWV(f: List<String>): Result {
+        // $--MWV,angle,ref,speed,units,status
+        val ang = f.getOrNull(1)?.toDoubleOrNull()
+        val ref = f.getOrNull(2)        // R=relative (apparent), T=true
+        val spd = f.getOrNull(3)?.toDoubleOrNull()
+        val units = f.getOrNull(4)
         val status = f.getOrNull(5)
-        if (status != "A") return
-        val awsKn = when (unit) {
-            "N" -> speed
-            "M" -> speed?.times(1.9438445)
-            "K" -> speed?.times(0.539957)
-            else -> null
+        val ok = status.equals("A", true) || status.isNullOrBlank()
+
+        if (!ok) return Result()
+
+        val speedKn = when (units?.uppercase()) {
+            "N" -> spd
+            "M" -> spd?.times(1.943844) // m/s -> kn
+            "K" -> spd?.times(0.539957) // km/h -> kn
+            else -> spd
         }
-        if (angle != null || awsKn != null) {
-            DataBus.apply(Source.NMEA_0183, NavData(awaDeg = angle, awsKn = awsKn))
-        }
+
+        return if (ref.equals("T", true))
+            Result(twsKn = speedKn, twdDeg = ang)
+        else
+            Result(twaDeg = ang, twsKn = speedKn)  // relativo
     }
 
-    private fun parseDBT(f: List<String>) {
-        // $--DBT,xx.x,f,xx.x,M,xx.x,F
-        val depthM = f.getOrNull(3)?.toDoubleOrNull()
-        if (depthM != null) DataBus.apply(Source.NMEA_0183, NavData(depthM = depthM))
-    }
-
-    private fun parseXTE(@Suppress("UNUSED_PARAMETER") f: List<String>) { /* in futuro */ }
-    private fun parseRMB(@Suppress("UNUSED_PARAMETER") f: List<String>) { /* in futuro */ }
-
-    private fun parseLat(v: String?, hemi: String?): Double? {
-        // ddmm.mmmm + N/S
-        val s = v ?: return null
-        if (s.length < 4) return null
-        val deg = s.substring(0, 2).toIntOrNull() ?: return null
-        val min = s.substring(2).toDoubleOrNull() ?: return null
-        var out = deg + min / 60.0
-        if (hemi == "S") out = -out
-        return out
-    }
-    private fun parseLon(v: String?, hemi: String?): Double? {
-        // dddmm.mmmm + E/W
-        val s = v ?: return null
-        if (s.length < 5) return null
-        val deg = s.substring(0, 3).toIntOrNull() ?: return null
-        val min = s.substring(3).toDoubleOrNull() ?: return null
-        var out = deg + min / 60.0
-        if (hemi == "W") out = -out
-        return out
+    private fun parseDBT(f: List<String>): Result {
+        // $--DBT,feet,f,M,meters,m,F,fathoms,f
+        val meters = f.getOrNull(3)?.toDoubleOrNull()
+        return Result(depthM = meters)
     }
 }
