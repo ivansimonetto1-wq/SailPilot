@@ -2,6 +2,8 @@ package com.perseitech.sailpilot.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -12,69 +14,118 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlin.math.*
+import kotlin.math.roundToInt
 
 @Composable
 fun RegattaPanel(
-    sogKn: Double?,          // Speed Over Ground
-    cogDeg: Double?,         // Course Over Ground
-    brgToWpDeg: Double?,     // Bearing verso WP attivo
-    distToWpNm: Double?,     // Distanza al WP
-    etaToWpText: String?     // ETA formattata
+    sogKn: Double?,
+    cogDeg: Double?,
+    brgToWpDeg: Double?,
+    distToWpNm: Double?,
+    etaToWpText: String?
 ) {
-    val delta = if (cogDeg != null && brgToWpDeg != null) angleDiff(brgToWpDeg, cogDeg) else null
-    val vmg = if (sogKn != null && delta != null) sogKn * cos(Math.toRadians(delta.absoluteValue)) else null
-    val turn = delta?.let { if (it > 0) "Ruota ${it.toInt()}° → dritta" else if (it < 0) "Ruota ${(-it).toInt()}° → sinistra" else "In rotta" }
-
     Surface(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black),
-        color = Color.Black
+            .background(Color(0xFF000F17))
     ) {
         Column(
-            Modifier
+            modifier = Modifier
                 .fillMaxSize()
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
+                .padding(12.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Block("SOG", sogKn?.let { "%.1f kn".format(it) } ?: "—")
-                Block("COG", cogDeg?.let { "${it.toInt()}°" } ?: "—")
+            Text(
+                "Regatta dashboard",
+                color = Color.Cyan,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    RegattaTile(
+                        modifier = Modifier.weight(1f),
+                        title = "SOG",
+                        value = sogKn?.let { "${it.roundToInt()} kn" } ?: "--",
+                        accent = Color(0xFFFFC107)
+                    )
+                    RegattaTile(
+                        modifier = Modifier.weight(1f),
+                        title = "COG",
+                        value = cogDeg?.let { "${it.roundToInt()}°" } ?: "--",
+                        accent = Color(0xFF29B6F6)
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    RegattaTile(
+                        modifier = Modifier.weight(1f),
+                        title = "BRG→WP",
+                        value = brgToWpDeg?.let { "${it.roundToInt()}°" } ?: "--",
+                        accent = Color(0xFF00E676)
+                    )
+                    RegattaTile(
+                        modifier = Modifier.weight(1f),
+                        title = "DIST WP",
+                        value = distToWpNm?.let { String.format("%.2f nm", it) } ?: "--",
+                        accent = Color(0xFFFF5252)
+                    )
+                }
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Block("BRG→WP", brgToWpDeg?.let { "${it.toInt()}°" } ?: "—")
-                Block("Δ rotta", delta?.let { "${it.toInt()}°" } ?: "—")
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Block("VMG→WP", vmg?.let { "%.1f kn".format(it) } ?: "—")
-                Block("Dist→WP", distToWpNm?.let { "%.2f NM".format(it) } ?: "—")
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
-                Block("ETA→WP", etaToWpText ?: "—", wide = true)
-            }
-            if (turn != null) {
-                Text(turn, color = Color(0xFF00E676), fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF001822), shape = MaterialTheme.shapes.medium)
+                    .padding(12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "ETA: ${etaToWpText ?: "--"}",
+                    color = Color.White,
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }
 }
 
 @Composable
-private fun Block(title: String, value: String, wide: Boolean = false) {
+private fun RegattaTile(
+    modifier: Modifier = Modifier,
+    title: String,
+    value: String,
+    accent: Color
+) {
     Column(
-        modifier = Modifier
-            .then(if (wide) Modifier.fillMaxWidth() else Modifier.widthIn(min = 0.dp))
-            .padding(6.dp),
-        horizontalAlignment = Alignment.Start
+        modifier = modifier
+            .heightIn(min = 90.dp)
+            .background(Color(0xFF001822), shape = MaterialTheme.shapes.medium)
+            .padding(10.dp),
+        verticalArrangement = Arrangement.SpaceBetween
     ) {
-        Text(title, color = Color.LightGray, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-        Text(value, color = Color.White, fontSize = 56.sp, fontWeight = FontWeight.Bold)
+        Text(
+            title,
+            color = accent,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            value,
+            color = Color.White,
+            fontSize = 30.sp,
+            fontWeight = FontWeight.Bold
+        )
     }
-}
-
-private fun angleDiff(target: Double, current: Double): Double {
-    var d = ((target - current + 540) % 360) - 180
-    if (d < -180) d += 360.0
-    return d
 }

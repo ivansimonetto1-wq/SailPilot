@@ -4,12 +4,15 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -17,12 +20,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.perseitech.sailpilot.routing.LatLon
-import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.min
-import kotlin.math.roundToInt
-import kotlin.math.sin
-import kotlin.math.sqrt
+import kotlinx.coroutines.delay
+import kotlin.math.*
 
 @Composable
 fun RegattaMapPage(
@@ -34,16 +33,42 @@ fun RegattaMapPage(
     hdgDeg: Double?,
     committee: LatLon?,
     pin: LatLon?,
-    isafCountdownEnabled: Boolean, // per ora non lo usiamo qui, servirà con countdown
+    isafCountdownEnabled: Boolean,
     onSetCommitteeFromGps: () -> Unit,
     onSetPinFromGps: () -> Unit,
     onClearLine: () -> Unit
 ) {
+    // --- COUNTDOWN ISAF (5-4-1-0) ---
+    var countdownTarget by remember { mutableStateOf<Long?>(null) }
+    var countdownSec by remember { mutableStateOf<Double?>(null) }
+
+    LaunchedEffect(countdownTarget) {
+        while (countdownTarget != null) {
+            val left = (countdownTarget!! - System.currentTimeMillis()) / 1000.0
+            if (left <= 0.0) {
+                countdownSec = 0.0
+                countdownTarget = null
+            } else {
+                countdownSec = left
+            }
+            delay(200)
+        }
+    }
+
+    fun startCountdown(totalSeconds: Int) {
+        countdownTarget = System.currentTimeMillis() + totalSeconds * 1000L
+    }
+    fun stopCountdown() {
+        countdownTarget = null
+        countdownSec = null
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF000F17))
-            .padding(12.dp),
+            .padding(12.dp)
+            .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
 
@@ -64,7 +89,18 @@ fun RegattaMapPage(
             onClear = onClearLine
         )
 
-        // 2) TURN INSTRUCTION
+        // 2) COUNTDOWN ISAF
+        if (isafCountdownEnabled) {
+            CountdownBox(
+                countdownSec = countdownSec,
+                onStart5m = { startCountdown(5 * 60) },
+                onStart4m = { startCountdown(4 * 60) },
+                onStart1m = { startCountdown(60) },
+                onStop = { stopCountdown() }
+            )
+        }
+
+        // 3) TURN INSTRUCTION
         TurnInstructionSection(
             twdDeg = twdDeg,
             tackAngleDeg = tackAngleDeg,
@@ -72,13 +108,17 @@ fun RegattaMapPage(
             hdgDeg = hdgDeg
         )
 
-        // 3) BURN / TTL
+        // 4) BURN / TTL legati al countdown
         BurnTtlSection(
             live = live,
             sogKn = sogKn,
             committee = committee,
-            pin = pin
+            pin = pin,
+            countdownSec = countdownSec
         )
+
+        // 5) REGATTA OVERVIEW (circuito virtuale + vele suggerite)
+        RegattaOverviewSection()
     }
 }
 
@@ -156,6 +196,53 @@ private fun RegButton(
 }
 
 // --------------------------------------------------------
+// COUNTDOWN ISAF (semplice, senza beep per ora)
+// --------------------------------------------------------
+
+@Composable
+private fun CountdownBox(
+    countdownSec: Double?,
+    onStart5m: () -> Unit,
+    onStart4m: () -> Unit,
+    onStart1m: () -> Unit,
+    onStop: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF001822))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            "ISAF countdown",
+            color = Color.White,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            RegButton("5:00", enabled = true, onClick = onStart5m)
+            RegButton("4:00", enabled = true, onClick = onStart4m)
+            RegButton("1:00", enabled = true, onClick = onStart1m)
+            RegButton("Stop", enabled = true, onClick = onStop)
+        }
+
+        val text = countdownSec?.let { formatSeconds(it) } ?: "--:--"
+
+        Text(
+            "Start in: $text",
+            color = Color.Cyan,
+            fontSize = 28.sp,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+// --------------------------------------------------------
 // TURN INSTRUCTION (gauge circolare)
 // --------------------------------------------------------
 
@@ -207,8 +294,30 @@ private fun TurnInstructionSection(
 
         Spacer(Modifier.height(8.dp))
 
+        TurnInstructionGauge(deltaDeg = deltaDeg, color = color)
+
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Δ heading: $deltaText",
+            color = color,
+            fontSize = 24.sp,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+@Composable
+private fun TurnInstructionGauge(
+    deltaDeg: Double?,
+    color: Color
+) {
+    Box(
+        modifier = Modifier
+            .size(220.dp),
+        contentAlignment = Alignment.Center
+    ) {
         Canvas(
-            modifier = Modifier.size(220.dp)
+            modifier = Modifier.fillMaxSize()
         ) {
             val cx = size.width / 2f
             val cy = size.height / 2f
@@ -254,24 +363,25 @@ private fun TurnInstructionSection(
                     sweepAngle = sweep,
                     useCenter = false,
                     topLeft = Offset(cx - radius, cy - radius),
-                    size = androidx.compose.ui.geometry.Size(radius * 2, radius * 2),
+                    size = Size(radius * 2, radius * 2),
                     style = Stroke(width = 10f, cap = StrokeCap.Round)
                 )
             }
         }
 
-        Spacer(Modifier.height(4.dp))
+        // testo al centro (usiamo Text sopra il Canvas)
+        val text = deltaDeg?.let { "${it.roundToInt()}°" } ?: "—"
         Text(
-            "Δ heading: $deltaText",
+            text = text,
             color = color,
-            fontSize = 20.sp,
+            fontSize = 40.sp,
             fontWeight = FontWeight.Bold
         )
     }
 }
 
 // --------------------------------------------------------
-// BURN / TTL (semplificato ma reale)
+// BURN / TTL legati al countdown
 // --------------------------------------------------------
 
 @Composable
@@ -279,7 +389,8 @@ private fun BurnTtlSection(
     live: LatLon?,
     sogKn: Double?,
     committee: LatLon?,
-    pin: LatLon?
+    pin: LatLon?,
+    countdownSec: Double?
 ) {
     Column(
         modifier = Modifier
@@ -309,20 +420,142 @@ private fun BurnTtlSection(
 
         val mps = sogKn * 0.514444
         val ttlSec = crossTrackM / mps
-        // finché non agganciamo il vero countdown ISAF, BURN = TTL (stub)
-        val burnSec = ttlSec
+
+        val burnSec: Double? =
+            if (countdownSec != null) ttlSec - countdownSec else null
+
+        val ttlText = formatSeconds(ttlSec)
+        val burnText = burnSec?.let { formatSignedSeconds(it) } ?: "--:--"
+
+        val burnColor = when {
+            burnSec == null -> Color.Gray
+            burnSec > 5.0 -> Color(0xFF00E676)   // in anticipo → puoi “bruciare” tempo
+            burnSec < -5.0 -> Color(0xFFFF5252)  // in ritardo
+            else -> Color.Yellow
+        }
 
         Text(
-            "TTL (time to line): ${formatSeconds(ttlSec)}",
+            "TTL (time to line): $ttlText",
             color = Color.Cyan,
-            fontSize = 18.sp,
+            fontSize = 26.sp,
             fontWeight = FontWeight.Bold
         )
         Text(
-            "Burn: ${formatSeconds(burnSec)}",
-            color = Color(0xFFFF5252),
-            fontSize = 18.sp,
+            "Burn: $burnText",
+            color = burnColor,
+            fontSize = 26.sp,
             fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+// --------------------------------------------------------
+// REGATTA OVERVIEW (circuito virtuale + vele)
+// --------------------------------------------------------
+
+@Composable
+private fun RegattaOverviewSection() {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF001822))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            "Regatta overview",
+            color = Color.White,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            "Circuito virtuale (Upwind • Reach • Downwind)",
+            color = Color.LightGray,
+            fontSize = 13.sp
+        )
+
+        Spacer(Modifier.height(8.dp))
+
+        // Semplice layout a colonne con 3 leg
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            LegColumn(
+                title = "UPWIND",
+                color = Color(0xFF00E676),
+                sailHint = "Main + Jib/Genoa\nTWA ~35–45°"
+            )
+            LegColumn(
+                title = "REACH",
+                color = Color(0xFFFFFF00),
+                sailHint = "Main + Code 0 / A3\nTWA ~70–110°"
+            )
+            LegColumn(
+                title = "DOWNWIND",
+                color = Color(0xFFFF5252),
+                sailHint = "Main + Gennaker/Spin\nTWA ~135–180°"
+            )
+        }
+    }
+}
+
+@Composable
+private fun LegColumn(
+    title: String,
+    color: Color,
+    sailHint: String
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            title,
+            color = color,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Canvas(
+            modifier = Modifier
+                .width(60.dp)
+                .height(80.dp)
+        ) {
+            val cx = size.width / 2f
+            val top = 10f
+            val bottom = size.height - 10f
+
+            // freccia semplice verticale
+            drawLine(
+                color = color,
+                start = Offset(cx, bottom),
+                end = Offset(cx, top),
+                strokeWidth = 5f,
+                cap = StrokeCap.Round
+            )
+            // punta freccia
+            drawLine(
+                color = color,
+                start = Offset(cx, top),
+                end = Offset(cx - 10f, top + 15f),
+                strokeWidth = 4f,
+                cap = StrokeCap.Round
+            )
+            drawLine(
+                color = color,
+                start = Offset(cx, top),
+                end = Offset(cx + 10f, top + 15f),
+                strokeWidth = 4f,
+                cap = StrokeCap.Round
+            )
+        }
+        Text(
+            sailHint,
+            color = Color.LightGray,
+            fontSize = 11.sp,
+            lineHeight = 13.sp,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
         )
     }
 }
@@ -377,6 +610,16 @@ private fun formatSeconds(sec: Double): String {
     val m = total / 60
     val s = total % 60
     return "%d:%02d".format(m, s)
+}
+
+private fun formatSignedSeconds(sec: Double): String {
+    if (!sec.isFinite()) return "--:--"
+    val sign = if (sec >= 0) "+" else "-"
+    val abs = kotlin.math.abs(sec)
+    val total = abs.roundToInt()
+    val m = total / 60
+    val s = total % 60
+    return "$sign${"%d:%02d".format(m, s)}"
 }
 
 // --------------------------------------------------------
