@@ -8,97 +8,108 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 
+/**
+ * Pannello strumenti semplice, tutto in colonna:
+ * - Heading M
+ * - COG
+ * - SOG
+ * - Lat/Lon
+ * - Dist → WP
+ * - Course → WP
+ * - ETA → WP
+ *
+ * NESSUN uso di weight, solo padding e allineamenti.
+ */
 @Composable
 fun InstrumentPanel(
-    headingDeg: Double?,           // bearing da GPS (deg)
-    sogKn: Double?,                // speed over ground (kn)
-    cogDeg: Double?,               // course over ground (deg) — normalmente = heading
-    latText: String?,              // “N 41.12345°”
-    lonText: String?,              // “E 12.12345°”
-    distNextNm: Double?,           // distanza al prossimo waypoint in NM
-    brgNextDeg: Double?,           // rotta (bearing) verso prossimo waypoint
-    etaNextText: String?           // es: “0h 23m”
+    headingDeg: Double?,
+    sogKn: Double?,
+    cogDeg: Double?,
+    latText: String?,
+    lonText: String?,
+    distNextNm: Double?,
+    brgNextDeg: Double?,
+    etaNextText: String?
 ) {
     Surface(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black),
-        color = Color.Black
+            .background(MaterialTheme.colorScheme.background),
+        color = MaterialTheme.colorScheme.background
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                BigBlock(title = "Heading M", value = headingDeg?.let { "${it.toInt()}°" } ?: "—")
-                BigBlock(title = "SOG", value = sogKn?.let { "%.1f kn".format(it) } ?: "—")
-            }
-
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                BigBlock(title = "COG M", value = cogDeg?.let { "${it.toInt()}°" } ?: "—")
-                BigBlock(
-                    title = "Lat/Lon",
-                    value = if (latText != null && lonText != null) "$latText   •   $lonText" else "—",
-                    small = true
-                )
-            }
-
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                BigBlock(title = "Dist → WP", value = distNextNm?.let { "%.2f NM".format(it) } ?: "—")
-                BigBlock(title = "Course → WP", value = brgNextDeg?.let { "${it.toInt()}°" } ?: "—")
-            }
-
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Start
-            ) {
-                BigBlock(title = "ETA → WP", value = etaNextText ?: "—", wide = true)
-            }
+            InstrumentRow(
+                label = "Heading M",
+                value = headingDeg?.roundToInt()?.let { "$it°" } ?: "—"
+            )
+            InstrumentRow(
+                label = "COG M",
+                value = cogDeg?.roundToInt()?.let { "$it°" } ?: "—"
+            )
+            InstrumentRow(
+                label = "SOG",
+                value = sogKn?.let { String.format("%.1f kn", it) } ?: "—"
+            )
+            InstrumentRow(
+                label = "Lat / Lon",
+                value = if (latText != null && lonText != null)
+                    "$latText   $lonText"
+                else
+                    "—",
+                small = true
+            )
+            InstrumentRow(
+                label = "Dist → WP",
+                value = distNextNm?.let { String.format("%.2f NM", it) } ?: "—"
+            )
+            InstrumentRow(
+                label = "Course → WP",
+                value = brgNextDeg?.roundToInt()?.let { "$it°" } ?: "—"
+            )
+            InstrumentRow(
+                label = "ETA → WP",
+                value = etaNextText ?: "—"
+            )
         }
     }
 }
 
 @Composable
-private fun BigBlock(
-    title: String,
+private fun InstrumentRow(
+    label: String,
     value: String,
-    small: Boolean = false,
-    wide: Boolean = false
+    small: Boolean = false
 ) {
     Column(
-        modifier = Modifier
-            .then(if (wide) Modifier.fillMaxWidth() else Modifier.widthIn(min = 0.dp))
-            .padding(6.dp),
-        horizontalAlignment = Alignment.Start
+        modifier = Modifier.fillMaxWidth()
     ) {
         Text(
-            text = title,
-            color = Color.LightGray,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.SemiBold
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
         )
+        Spacer(modifier = Modifier.height(2.dp))
         Text(
             text = value,
-            color = Color.White,
-            fontSize = if (small) 28.sp else 56.sp,
-            fontWeight = FontWeight.Bold
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 2.dp),
+            textAlign = TextAlign.Left,
+            fontSize = if (small) 22.sp else 28.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onBackground,
+            lineHeight = if (small) 24.sp else 30.sp
         )
     }
 }

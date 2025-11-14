@@ -1,507 +1,386 @@
 package com.perseitech.sailpilot.ui
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Path
-import android.media.AudioManager
-import android.media.ToneGenerator
-import android.view.ViewGroup
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
-import com.perseitech.sailpilot.regatta.computeLaylines
+import androidx.compose.ui.unit.sp
 import com.perseitech.sailpilot.routing.LatLon
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import org.osmdroid.tileprovider.tilesource.TileSourceFactory
-import org.osmdroid.util.GeoPoint
-import org.osmdroid.views.MapView
-import org.osmdroid.views.overlay.Marker
-import org.osmdroid.views.overlay.Polyline
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-/**
- * Regatta Map:
- * - mappa osmdroid con barca, starting line, laylines
- * - TTL (time to line), Burn (TTL - tempo residuo)
- * - lato favorito (port / starboard)
- * - countdown ISAF 5-4-1-0 con beep
- * - turn-instruction testuale + barra visiva
- */
 @Composable
 fun RegattaMapPage(
     live: LatLon?,
     sogKn: Double?,
     twdDeg: Double?,
-    tackAngleDeg: Double,
+    tackAngleDeg: Double?,
     cogDeg: Double?,
     hdgDeg: Double?,
     committee: LatLon?,
     pin: LatLon?,
-    isafCountdownEnabled: Boolean,
-    onSetCommitteeFromGps: (() -> Unit)?,
-    onSetPinFromGps:   (() -> Unit)?,
-    onClearLine:       (() -> Unit)?
+    isafCountdownEnabled: Boolean, // per ora non lo usiamo qui, servirà con countdown
+    onSetCommitteeFromGps: () -> Unit,
+    onSetPinFromGps: () -> Unit,
+    onClearLine: () -> Unit
 ) {
-    // ---- STATE REGATTA ----
-    var ttlSeconds by remember { mutableStateOf<Double?>(null) }      // time to line (s)
-    var burnSeconds by remember { mutableStateOf<Double?>(null) }     // TTL - countdown
-    var remainingSec by remember { mutableStateOf<Int?>(null) }       // countdown corrente
-    var favouredSide by remember { mutableStateOf("—") }              // Port / Starboard
-    var turnDir by remember { mutableStateOf<String?>(null) }         // "L" / "R"
-    var turnDeg by remember { mutableStateOf<Double?>(null) }         // 0..60
-    var targetAngleDeg by remember { mutableStateOf<Double?>(null) }  // bearing layline target
-
-    val scope = rememberCoroutineScope()
-    var countdownJob by remember { mutableStateOf<Job?>(null) }
-
-    // Tone generator per beep countdown
-    val toneGen = remember { ToneGenerator(AudioManager.STREAM_MUSIC, 80) }
-
-    fun startCountdown(totalSeconds: Int) {
-        if (!isafCountdownEnabled) return
-        countdownJob?.cancel()
-        countdownJob = scope.launch {
-            var rem = totalSeconds
-            var prev = rem
-            val marks = listOf(300, 240, 60, 0) // 5m, 4m, 1m, 0
-
-            while (rem >= -30) {
-                remainingSec = rem
-                ttlSeconds?.let { ttl -> burnSeconds = ttl - rem.toDouble() }
-
-                // Beep quando attraversiamo le soglie canoniche
-                marks.forEach { m ->
-                    if (prev >= m && rem < m) {
-                        toneGen.startTone(ToneGenerator.TONE_PROP_BEEP, 350)
-                    }
-                }
-
-                prev = rem
-                delay(1000L)
-                rem--
-            }
-        }
-    }
-
-    fun stopCountdown() {
-        countdownJob?.cancel()
-        countdownJob = null
-        remainingSec = null
-        burnSeconds = null
-    }
-
-    // ================= CALCOLI GEOMETRICI (fuori da AndroidView) =================
-
-    // TTL approssimato: distanza ortogonale alla linea / velocità
-    ttlSeconds = if (live != null && committee != null && pin != null && sogKn != null && sogKn > 0.1) {
-        val dist = distanceToSegmentMeters(live, committee, pin) // m
-        dist / (sogKn * 0.514444) // s
-    } else null
-
-    // calcolo lato favorito, target angle e turn-instruction
-    run {
-        if (live != null && twdDeg != null) {
-            val (pPort, pStar) = computeLaylines(live, twdDeg, tackAngleDeg, lenM = 2500.0)
-
-            val baseDir = hdgDeg ?: cogDeg
-            val portFavoured = if (baseDir != null) {
-                val brgPort = bearing(live, pPort)
-                val brgStar = bearing(live, pStar)
-                val dPort = abs(normDelta(brgPort - baseDir))
-                val dStar = abs(normDelta(brgStar - baseDir))
-                dPort <= dStar
-            } else {
-                true
-            }
-
-            favouredSide = if (portFavoured) "Port tack favoured" else "Starboard tack favoured"
-
-            if (cogDeg != null) {
-                val targetBrg = if (portFavoured) bearing(live, pPort) else bearing(live, pStar)
-                targetAngleDeg = targetBrg
-                val delta = normDelta(targetBrg - cogDeg)
-                val dir = if (delta >= 0) "R" else "L"
-                val ang = abs(delta).coerceIn(0.0, 60.0)
-
-                turnDir = dir
-                turnDeg = ang
-            } else {
-                targetAngleDeg = null
-                turnDir = null
-                turnDeg = null
-            }
-        } else {
-            favouredSide = "—"
-            targetAngleDeg = null
-            turnDir = null
-            turnDeg = null
-        }
-    }
-
-    // ============================ UI ============================
-
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(Color(0xFF000F17))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
 
-        // MAPPA OSMDROID
-        AndroidView(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            factory = { ctx ->
-                MapView(ctx).apply {
-                    layoutParams = ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                    setTileSource(TileSourceFactory.MAPNIK)
-                    setMultiTouchControls(true)
-                    controller.setZoom(13.0)
-                    live?.let { controller.setCenter(GeoPoint(it.lat, it.lon)) }
-                }
-            },
-            update = { mv ->
-                mv.overlays.clear()
-
-                fun marker(pt: LatLon, title: String, icon: Bitmap? = null, rotation: Float? = null): Marker =
-                    Marker(mv).apply {
-                        position = GeoPoint(pt.lat, pt.lon)
-                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
-                        this.title = title
-                        icon?.let {
-                            this.icon = android.graphics.drawable.BitmapDrawable(mv.resources, it)
-                        }
-                        rotation?.let { this.rotation = it }
-                    }
-
-                fun line(a: LatLon, b: LatLon, color: Int, width: Float = 6f): Polyline =
-                    Polyline().apply {
-                        outlinePaint.color = color
-                        outlinePaint.strokeWidth = width
-                        setPoints(listOf(GeoPoint(a.lat, a.lon), GeoPoint(b.lat, b.lon)))
-                    }
-
-                // BARCA + freccia heading/COG
-                live?.let { boat ->
-                    val heading = (hdgDeg ?: cogDeg)?.toFloat()
-                    val bmp = makeArrowBitmap(size = 52, color = Color.CYAN)
-                    mv.overlays.add(
-                        marker(
-                            boat,
-                            "Boat",
-                            bmp,
-                            rotation = heading ?: 0f
-                        )
-                    )
-                    mv.controller.setCenter(GeoPoint(boat.lat, boat.lon))
-                }
-
-                // starting line
-                if (committee != null && pin != null) {
-                    mv.overlays.add(line(committee, pin, Color.YELLOW, 8f))
-                    mv.overlays.add(marker(committee, "Committee"))
-                    mv.overlays.add(marker(pin, "Pin"))
-                }
-
-                // laylines solo grafica (i calcoli li abbiamo già fatti sopra)
-                if (live != null && twdDeg != null) {
-                    val (pPort, pStar) = computeLaylines(live, twdDeg, tackAngleDeg, lenM = 2500.0)
-                    val portFavouredNow = favouredSide.startsWith("Port")
-
-                    val colTarget = Color.GREEN
-                    val colOther  = Color.LTGRAY
-
-                    mv.overlays.add(
-                        line(
-                            live,
-                            pPort,
-                            if (portFavouredNow) colTarget else colOther,
-                            width = 7f
-                        )
-                    )
-                    mv.overlays.add(
-                        line(
-                            live,
-                            pStar,
-                            if (!portFavouredNow) colTarget else colOther,
-                            width = 7f
-                        )
-                    )
-                }
-
-                mv.invalidate()
-            }
+        // HEADER
+        Text(
+            text = "REGATTA MAP (virtual)",
+            color = Color.Cyan,
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold
         )
 
-        // COMANDI COM/PIN/CLEAR + COUNTDOWN
+        // 1) STARTING LINE
+        StartingLineBox(
+            committee = committee,
+            pin = pin,
+            onSetCommitteeFromGps = onSetCommitteeFromGps,
+            onSetPinFromGps = onSetPinFromGps,
+            onClear = onClearLine
+        )
+
+        // 2) TURN INSTRUCTION
+        TurnInstructionSection(
+            twdDeg = twdDeg,
+            tackAngleDeg = tackAngleDeg,
+            cogDeg = cogDeg,
+            hdgDeg = hdgDeg
+        )
+
+        // 3) BURN / TTL
+        BurnTtlSection(
+            live = live,
+            sogKn = sogKn,
+            committee = committee,
+            pin = pin
+        )
+    }
+}
+
+// --------------------------------------------------------
+// STARTING LINE
+// --------------------------------------------------------
+
+@Composable
+private fun StartingLineBox(
+    committee: LatLon?,
+    pin: LatLon?,
+    onSetCommitteeFromGps: () -> Unit,
+    onSetPinFromGps: () -> Unit,
+    onClear: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF002130))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            "Starting line",
+            color = Color.White,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            "COM: ${committee?.lat?.format4() ?: "--"} / ${committee?.lon?.format4() ?: "--"}",
+            color = Color.LightGray,
+            fontSize = 13.sp
+        )
+        Text(
+            "PIN: ${pin?.lat?.format4() ?: "--"} / ${pin?.lon?.format4() ?: "--"}",
+            color = Color.LightGray,
+            fontSize = 13.sp
+        )
+
+        Spacer(Modifier.height(8.dp))
+
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .padding(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Button(onClick = { onSetCommitteeFromGps?.invoke() }, enabled = onSetCommitteeFromGps != null) {
-                Text("Set COM GPS")
-            }
-            Button(onClick = { onSetPinFromGps?.invoke() }, enabled = onSetPinFromGps != null) {
-                Text("Set PIN GPS")
-            }
-            Button(
-                onClick = {
-                    onClearLine?.invoke()
-                },
-                enabled = onClearLine != null
-            ) {
-                Text("Clear")
-            }
-
-            Spacer(Modifier.weight(1f))
-
-            if (isafCountdownEnabled) {
-                Button(onClick = { startCountdown(300) }) { Text("5-4-1-0") }
-                Button(onClick = { startCountdown(240) }) { Text("@4m") }
-                Button(onClick = { startCountdown(60) })  { Text("@1m") }
-                Button(onClick = { stopCountdown() })     { Text("Stop") }
-            }
-        }
-
-        // OVERLAY INFO + TURN BAR
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(8.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Text("Regatta prestart", style = MaterialTheme.typography.titleMedium)
-
-                Text("TTL (time to line): " + (ttlSeconds?.let { formatTime(it) } ?: "—"))
-                Text("BURN: " + (burnSeconds?.let { formatSignedTime(it) } ?: "—"))
-                Text("Countdown: " + (remainingSec?.let { formatTime(it.toDouble()) } ?: "—"))
-
-                Text("Favoured side: $favouredSide")
-                val targetTxt = targetAngleDeg?.let { "%.0f°".format(it) } ?: "—"
-                Text("Target angle: $targetTxt")
-
-                Spacer(Modifier.height(8.dp))
-                TurnBar(turnDeg = turnDeg, dir = turnDir)
-            }
+            RegButton("COM @ GPS", enabled = true, onClick = onSetCommitteeFromGps)
+            RegButton("PIN @ GPS", enabled = true, onClick = onSetPinFromGps)
+            RegButton(
+                "Clear",
+                enabled = (committee != null || pin != null),
+                onClick = onClear
+            )
         }
     }
 }
 
-/**
- * Turn-instruction semplificato:
- * - due barre orizzontali, una per L e una per R
- * - la lunghezza è proporzionale all’angolo (max 60°)
- */
 @Composable
-private fun TurnBar(turnDeg: Double?, dir: String?) {
-    val value = turnDeg ?: 0.0
-    val clamped = value.coerceIn(0.0, 60.0)
-    val frac = (clamped / 60.0).toFloat()
+private fun RegButton(
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val bg = if (enabled) Color(0xFF005066) else Color(0xFF00343F)
+    val fg = if (enabled) Color.White else Color.LightGray.copy(alpha = 0.5f)
 
-    val isLeft = dir == "L"
-    val isRight = dir == "R"
+    Box(
+        modifier = Modifier
+            .background(bg, shape = MaterialTheme.shapes.small)
+            .clickable(enabled = enabled) { onClick() }
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+    ) {
+        Text(label, color = fg, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
 
-    val label = if (turnDeg == null || dir == null) {
-        "—"
-    } else {
-        "${if (isLeft) "L" else "R"} ${"%.0f".format(value)}°"
+// --------------------------------------------------------
+// TURN INSTRUCTION (gauge circolare)
+// --------------------------------------------------------
+
+@Composable
+private fun TurnInstructionSection(
+    twdDeg: Double?,
+    tackAngleDeg: Double?,
+    cogDeg: Double?,
+    hdgDeg: Double?
+) {
+    val headingRef = hdgDeg ?: cogDeg
+
+    val targetUpwindHeading: Double? =
+        if (twdDeg != null && tackAngleDeg != null && headingRef != null) {
+            val starboard = normalizeDeg(twdDeg - tackAngleDeg / 2.0)
+            val port = normalizeDeg(twdDeg + tackAngleDeg / 2.0)
+            val dStar = abs(signedAngleDeg(starboard - headingRef))
+            val dPort = abs(signedAngleDeg(port - headingRef))
+            if (dStar <= dPort) starboard else port
+        } else null
+
+    val deltaDeg: Double? =
+        if (headingRef != null && targetUpwindHeading != null) {
+            signedAngleDeg(targetUpwindHeading - headingRef)
+        } else null
+
+    val deltaText = deltaDeg?.let { "${it.roundToInt()}°" } ?: "—"
+
+    val color = when {
+        deltaDeg == null -> Color.Gray
+        deltaDeg > 2 -> Color(0xFF00E676)    // vira a destra → verde
+        deltaDeg < -2 -> Color(0xFFFF5252)   // vira a sinistra → rosso
+        else -> Color.Yellow                 // ok / on target
     }
 
     Column(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF001822))
+            .padding(12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            "Turn instruction",
+            color = Color.White,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        Spacer(Modifier.height(8.dp))
+
+        Canvas(
+            modifier = Modifier.size(220.dp)
+        ) {
+            val cx = size.width / 2f
+            val cy = size.height / 2f
+            val radius = min(cx, cy) * 0.85f
+
+            // cerchio base
+            drawCircle(
+                color = Color.DarkGray,
+                radius = radius,
+                style = Stroke(width = 6f)
+            )
+
+            // ticks principali (-60, -30, 0, 30, 60)
+            val ticks = listOf(-60f, -30f, 0f, 30f, 60f)
+            ticks.forEach { a ->
+                val rad = Math.toRadians(a.toDouble() - 90.0)
+                val inner = radius * 0.75f
+                val outer = radius
+                val sx = cx + inner * cos(rad).toFloat()
+                val sy = cy + inner * sin(rad).toFloat()
+                val ex = cx + outer * cos(rad).toFloat()
+                val ey = cy + outer * sin(rad).toFloat()
+
+                drawLine(
+                    color = if (a == 0f) Color.White else Color.LightGray,
+                    start = Offset(sx, sy),
+                    end = Offset(ex, ey),
+                    strokeWidth = if (a == 0f) 5f else 3f,
+                    cap = StrokeCap.Round
+                )
+            }
+
+            // arco direzione turn
+            val d = deltaDeg ?: 0.0
+            val maxArc = 60f
+            val clamped = d.coerceIn(-maxArc.toDouble(), maxArc.toDouble())
+            if (deltaDeg != null && abs(clamped) > 1.0) {
+                val sweep = clamped.toFloat()
+                val startAngle = -90f
+                drawArc(
+                    color = color,
+                    startAngle = startAngle,
+                    sweepAngle = sweep,
+                    useCenter = false,
+                    topLeft = Offset(cx - radius, cy - radius),
+                    size = androidx.compose.ui.geometry.Size(radius * 2, radius * 2),
+                    style = Stroke(width = 10f, cap = StrokeCap.Round)
+                )
+            }
+        }
+
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Δ heading: $deltaText",
+            color = color,
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+// --------------------------------------------------------
+// BURN / TTL (semplificato ma reale)
+// --------------------------------------------------------
+
+@Composable
+private fun BurnTtlSection(
+    live: LatLon?,
+    sogKn: Double?,
+    committee: LatLon?,
+    pin: LatLon?
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFF002230))
+            .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        // Barra L
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("L", modifier = Modifier.width(18.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                if (isLeft && frac > 0f) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth(frac.coerceIn(0f, 1f))
-                            .height(6.dp)
-                            .background(MaterialTheme.colorScheme.primary)
-                    )
-                }
-            }
+        Text(
+            "Pre-start timing",
+            color = Color.White,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        if (live == null || committee == null || pin == null || sogKn == null || sogKn <= 0.3) {
+            Text(
+                "Serve posizione barca, linea e SOG > 0.3 kn",
+                color = Color.LightGray,
+                fontSize = 12.sp
+            )
+            return
         }
 
-        // Barra R
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("R", modifier = Modifier.width(18.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                if (isRight && frac > 0f) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth(frac.coerceIn(0f, 1f))
-                            .height(6.dp)
-                            .background(MaterialTheme.colorScheme.primary)
-                    )
-                }
-            }
-        }
+        // distanza perpendicolare stimata dalla linea COM–PIN
+        val crossTrackM = abs(signedDistanceToLineMeters(live, committee, pin))
 
-        Box(
-            modifier = Modifier.fillMaxWidth(),
-            contentAlignment = Alignment.Center
-        ) {
-            Text("Turn instruction: $label")
-        }
+        val mps = sogKn * 0.514444
+        val ttlSec = crossTrackM / mps
+        // finché non agganciamo il vero countdown ISAF, BURN = TTL (stub)
+        val burnSec = ttlSec
+
+        Text(
+            "TTL (time to line): ${formatSeconds(ttlSec)}",
+            color = Color.Cyan,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            "Burn: ${formatSeconds(burnSec)}",
+            color = Color(0xFFFF5252),
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold
+        )
     }
 }
 
-/* ==================== HELPER NON-COMPOSABLE ==================== */
+// --------------------------------------------------------
+// GEO / MATH HELPERS
+// --------------------------------------------------------
 
-/** bitmap freccia “su” da ruotare col heading/COG */
-private fun makeArrowBitmap(size: Int, color: Int): Bitmap {
-    val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-    val c = Canvas(bmp)
-    val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        this.color = color
-        style = Paint.Style.FILL
-    }
-    val w = size.toFloat()
-    val h = size.toFloat()
-    val path = Path().apply {
-        moveTo(w * 0.50f, h * 0.10f)
-        lineTo(w * 0.78f, h * 0.50f)
-        lineTo(w * 0.62f, h * 0.50f)
-        lineTo(w * 0.62f, h * 0.85f)
-        lineTo(w * 0.38f, h * 0.85f)
-        lineTo(w * 0.38f, h * 0.50f)
-        lineTo(w * 0.22f, h * 0.50f)
-        close()
-    }
-    c.drawPath(path, p)
-    return bmp
-}
-
-/** bearing iniziale da A a B in gradi [0..360) */
-private fun bearing(a: LatLon, b: LatLon): Double {
-    val φ1 = Math.toRadians(a.lat)
-    val φ2 = Math.toRadians(b.lat)
-    val λ1 = Math.toRadians(a.lon)
-    val λ2 = Math.toRadians(b.lon)
-    val dλ = λ2 - λ1
-    val y = sin(dλ) * cos(φ2)
-    val x = cos(φ1) * sin(φ2) - sin(φ1) * cos(φ2) * cos(dλ)
-    var deg = Math.toDegrees(kotlin.math.atan2(y, x))
-    if (deg < 0) deg += 360.0
-    return deg
-}
-
-/** normalizza angolo in intervallo [-180, +180] */
-private fun normDelta(d: Double): Double {
-    var x = (d + 540.0) % 360.0 - 180.0
-    if (x > 180) x -= 360.0
-    if (x < -180) x += 360.0
+private fun normalizeDeg(a: Double): Double {
+    var x = a % 360.0
+    if (x < 0) x += 360.0
     return x
 }
 
-/** distanza punto -> segmento in metri (approssimazione planare locale) */
-private fun distanceToSegmentMeters(p: LatLon, a: LatLon, b: LatLon): Double {
-    if (a.lat == b.lat && a.lon == b.lon) {
-        return geoApproxMeters(p, a)
-    }
+/** restituisce angolo fra -180..+180 */
+private fun signedAngleDeg(a: Double): Double {
+    var x = normalizeDeg(a)
+    if (x > 180.0) x -= 360.0
+    return x
+}
 
+/**
+ * Distanza firmata dalla retta COM–PIN (positiva da un lato, negativa dall'altro).
+ * Approssimazione planare locale (ok per campo di regata).
+ */
+private fun signedDistanceToLineMeters(p: LatLon, a: LatLon, b: LatLon): Double {
+    val lat0 = Math.toRadians((a.lat + b.lat + p.lat) / 3.0)
     val mPerDegLat = 111_132.0
-    val mPerDegLon =
-        111_320.0 * cos(Math.toRadians((a.lat + b.lat + p.lat) / 3.0))
+    val mPerDegLon = 111_320.0 * cos(lat0)
 
-    data class P(val x: Double, val y: Double)
-    fun toXY(ll: LatLon) = P(
-        (ll.lon - a.lon) * mPerDegLon,
-        (ll.lat - a.lat) * mPerDegLat
-    )
+    val ax = a.lon * mPerDegLon
+    val ay = a.lat * mPerDegLat
+    val bx = b.lon * mPerDegLon
+    val by = b.lat * mPerDegLat
+    val px = p.lon * mPerDegLon
+    val py = p.lat * mPerDegLat
 
-    val A = P(0.0, 0.0)
-    val B = toXY(b)
-    val Pp = toXY(p)
+    val vx = bx - ax
+    val vy = by - ay
+    val wx = px - ax
+    val wy = py - ay
 
-    val ABx = B.x - A.x
-    val ABy = B.y - A.y
-    val APx = Pp.x - A.x
-    val APy = Pp.y - A.y
-
-    val ab2 = ABx * ABx + ABy * ABy
-    val t = if (ab2 <= 1e-9) 0.0 else ((APx * ABx + APy * ABy) / ab2).coerceIn(0.0, 1.0)
-
-    val Hx = A.x + ABx * t
-    val Hy = A.y + ABy * t
-    val dx = Pp.x - Hx
-    val dy = Pp.y - Hy
-    return sqrt(dx * dx + dy * dy)
+    val cross = vx * wy - vy * wx
+    val norm = sqrt(vx * vx + vy * vy)
+    if (norm == 0.0) return 0.0
+    return cross / norm
 }
 
-/** distanza approssimata (metri) tra due LatLon vicini */
-private fun geoApproxMeters(a: LatLon, b: LatLon): Double {
-    val mPerDegLat = 111_132.0
-    val mPerDegLon =
-        111_320.0 * cos(Math.toRadians((a.lat + b.lat) / 2.0))
-    val dx = (b.lon - a.lon) * mPerDegLon
-    val dy = (b.lat - a.lat) * mPerDegLat
-    return sqrt(dx * dx + dy * dy)
+private fun formatSeconds(sec: Double): String {
+    if (!sec.isFinite()) return "--:--"
+    val total = sec.roundToInt().coerceAtLeast(0)
+    val m = total / 60
+    val s = total % 60
+    return "%d:%02d".format(m, s)
 }
 
-/** t in secondi → mm:ss */
-private fun formatTime(seconds: Double): String {
-    val s = seconds.toInt().coerceAtLeast(0)
-    val m = s / 60
-    val ss = s % 60
-    return "%d:%02d".format(m, ss)
-}
+// --------------------------------------------------------
+// Misc helpers
+// --------------------------------------------------------
 
-/** t in secondi con segno → +mm:ss / -mm:ss */
-private fun formatSignedTime(seconds: Double): String {
-    val sign = if (seconds >= 0) "+" else "-"
-    val s = abs(seconds).toInt()
-    val m = s / 60
-    val ss = s % 60
-    return "$sign%02d:%02d".format(m, ss)
-}
+private fun Double.format4(): String = String.format("%.4f", this)

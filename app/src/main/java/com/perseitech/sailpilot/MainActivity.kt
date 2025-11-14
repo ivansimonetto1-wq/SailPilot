@@ -14,6 +14,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -40,6 +43,8 @@ import com.perseitech.sailpilot.ui.*
 import com.perseitech.sailpilot.io.DataBus
 import com.perseitech.sailpilot.io.NavData
 import com.perseitech.sailpilot.regatta.RegattaPolars
+import com.perseitech.sailpilot.weather.OpenMeteoClient
+import com.perseitech.sailpilot.ui.WeatherSnapshot
 
 class MainActivity : ComponentActivity() {
 
@@ -64,7 +69,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val ctx = LocalContext.current
 
-            // App UI settings (tema chiaro/scuro + accento)
+            // ---- THEME ----
             val appUiRepo = remember { AppUiSettingsRepository(this@MainActivity) }
             val appUi by appUiRepo.flow.collectAsState(initial = AppUiSettings())
 
@@ -92,7 +97,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = colorScheme) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
 
-                    // Regatta settings (classe + countdown)
+                    // ---- REGATTA SETTINGS ----
                     val regattaRepo = remember { RegattaSettingsRepository(this@MainActivity) }
                     val regatta by regattaRepo.flow.collectAsState()
                     val selectedClass = runCatching {
@@ -101,7 +106,7 @@ class MainActivity : ComponentActivity() {
                     val isafCountdownEnabled = regatta.isafCountdownEnabled
                     var showRegattaSettings by remember { mutableStateOf(false) }
 
-                    // Splash / selezione iniziale modalità
+                    // ---- MODE SELECTION (splash) ----
                     var hasSelectedMode by rememberSaveable { mutableStateOf(false) }
                     var appMode by remember { mutableStateOf(AppMode.NAVIGATION) }
                     val toggleMode = {
@@ -122,7 +127,7 @@ class MainActivity : ComponentActivity() {
                         return@Surface
                     }
 
-                    // -------- Stato rotta / mappa --------
+                    // -------- ROUTE / MAP STATE --------
                     var start by remember { mutableStateOf<LatLon?>(null) }
                     var goal by remember { mutableStateOf<LatLon?>(null) }
                     var path by remember { mutableStateOf<List<LatLon>>(emptyList()) }
@@ -144,8 +149,9 @@ class MainActivity : ComponentActivity() {
                     val hdgDeg = nav.headingDeg
                     val twsKn = nav.twsKn
                     val twdDeg = nav.twdDeg
+                    val twaDeg = nav.twaDeg
 
-                    // Starting line (Regatta Map)
+                    // Starting line
                     var committee by remember { mutableStateOf<LatLon?>(null) }
                     var pin by remember { mutableStateOf<LatLon?>(null) }
 
@@ -185,6 +191,31 @@ class MainActivity : ComponentActivity() {
 
                     // tack angle dinamico da polari
                     val tackAngle = RegattaPolars.tackAngleDeg(ctx, selectedClass, twsKn)
+
+                    // ---- WEATHER FALLBACK (Open-Meteo) ----
+                    var externalWeather by remember { mutableStateOf<WeatherSnapshot?>(null) }
+                    var externalWeatherLoading by remember { mutableStateOf(false) }
+
+                    LaunchedEffect(liveLatLon, twsKn, twdDeg) {
+                        if ((twsKn == null || twdDeg == null) &&
+                            !externalWeatherLoading &&
+                            externalWeather == null
+                        ) {
+                            val pos: LatLon? = liveLatLon
+                                ?: getLastKnownLocation()?.let { loc ->
+                                    LatLon(loc.latitude, loc.longitude)
+                                }
+
+                            if (pos != null) {
+                                externalWeatherLoading = true
+                                val snap = withContext(Dispatchers.IO) {
+                                    OpenMeteoClient.fetchSnapshot(pos.lat, pos.lon)
+                                }
+                                externalWeather = snap
+                                externalWeatherLoading = false
+                            }
+                        }
+                    }
 
                     // Permesso GPS
                     val permLauncher = rememberLauncherForActivityResult(
@@ -233,23 +264,72 @@ class MainActivity : ComponentActivity() {
                         Toast.makeText(this@MainActivity, "Ottimizzazione (stub) eseguita.", Toast.LENGTH_SHORT).show()
                     }
 
-                    // --- Pagine ---
-                    val titles = listOf(
-                        "Mappa",
-                        "Control",
-                        "Instruments",
-                        "Compass",
-                        "Tools",
-                        "Connections",
-                        "Regatta Map"
+                    // --- Weather snapshot per pannello Meteo ---
+                    val weatherSnapshot: WeatherSnapshot =
+                        if (twsKn != null || twdDeg != null) {
+                            WeatherSnapshot(
+                                twsKn = twsKn,
+                                twdDeg = twdDeg,
+                                sogKn = sogKn,
+                                cogDeg = cogDeg,
+                                seaState = null,
+                                tide = null,
+                                providerName = "Onboard instruments",
+                                isForecast = false
+                            )
+                        } else {
+                            externalWeather?.copy(
+                                sogKn = sogKn ?: externalWeather?.sogKn,
+                                cogDeg = cogDeg ?: externalWeather?.cogDeg
+                            ) ?: WeatherSnapshot(
+                                twsKn = null,
+                                twdDeg = null,
+                                sogKn = sogKn,
+                                cogDeg = cogDeg,
+                                seaState = null,
+                                tide = null,
+                                providerName = "Nessun dato meteo",
+                                isForecast = false
+                            )
+                        }
+
+                    // ---- PAGINE (ordine diverso per Navigation / Regatta) ----
+                    val titles = if (appMode == AppMode.NAVIGATION) {
+                        listOf(
+                            "Mappa",
+                            "Control",
+                            "Instruments",
+                            "Weather",
+                            "Compass",
+                            "Tools",
+                            "Connections",
+                            "Regatta Map"
+                        )
+                    } else {
+                        listOf(
+                            "Regatta",
+                            "Weather",
+                            "Instruments",
+                            "Compass",
+                            "Tools",
+                            "Connections",
+                            "Regatta Map",
+                            "Mappa"
+                        )
+                    }
+
+                    // **FIX**: usare direttamente rememberPagerState (non dentro remember)
+                    val pagerState = rememberPagerState(
+                        initialPage = 0,
+                        pageCount = { titles.size }
                     )
-                    val pagerState = rememberPagerState(initialPage = 0, pageCount = { titles.size })
                     val pagerScope = rememberCoroutineScope()
                     fun goTo(title: String) {
                         val i = titles.indexOf(title)
                         if (i >= 0) pagerScope.launch { pagerState.animateScrollToPage(i) }
                     }
 
+                    // ---- TAB in alto ----
                     TabRow(selectedTabIndex = pagerState.currentPage) {
                         titles.forEachIndexed { i, t ->
                             Tab(
@@ -260,13 +340,15 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
+                    // =================== CONTENUTO PAGINE ===================
                     Box(Modifier.fillMaxSize()) {
                         HorizontalPager(
                             state = pagerState,
                             modifier = Modifier.fillMaxSize(),
-                            userScrollEnabled = false   // niente swipe orizzontale, così la mappa scorre libera
+                            userScrollEnabled = false   // niente swipe orizzontale: mappa libera
                         ) { page ->
                             when (titles[page]) {
+
                                 "Mappa" -> MapScreen(
                                     start = start,
                                     goal = goal,
@@ -324,7 +406,7 @@ class MainActivity : ComponentActivity() {
                                     onToggleMode = { toggleMode() },
                                     onOpenConnections = { goTo("Connections") },
                                     onOpenControlOrRegatta = {
-                                        if (appMode == AppMode.NAVIGATION) goTo("Control") else goTo("Regatta Map")
+                                        if (appMode == AppMode.NAVIGATION) goTo("Control") else goTo("Regatta")
                                     },
                                     onOpenTools = { goTo("Tools") },
                                     onOpenSettings = { showSettings = true },
@@ -392,6 +474,13 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
 
+                                "Weather" -> {
+                                    WeatherPanel(
+                                        modeLabel = if (appMode == AppMode.NAVIGATION) "Navigation" else "Regatta",
+                                        snapshot = weatherSnapshot
+                                    )
+                                }
+
                                 "Compass" -> {
                                     CompassPanel(
                                         cogDeg = cogDeg,
@@ -422,6 +511,20 @@ class MainActivity : ComponentActivity() {
 
                                 "Connections" -> ConnectionsPanel(appScope = uiScope)
 
+                                "Regatta" -> {
+                                    RegattaOverviewPanel(
+                                        sogKn = sogKn,
+                                        cogDeg = cogDeg,
+                                        twsKn = weatherSnapshot.twsKn,
+                                        twdDeg = weatherSnapshot.twdDeg,
+                                        twaDeg = twaDeg,
+                                        // **FIX**: niente displayName, uso name “pulito”
+                                        classLabel = selectedClass.name.replace('_', ' '),
+                                        onOpenRegattaMap = { goTo("Regatta Map") },
+                                        onOpenSailAdvisor = { /* futuro */ }
+                                    )
+                                }
+
                                 "Regatta Map" -> {
                                     RegattaMapPage(
                                         live = liveLatLon,
@@ -441,25 +544,66 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        // pallini in basso
+                        // ---------- NAV DOTS + FRECCE ----------
                         Row(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
-                                .padding(bottom = 12.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                .padding(bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            repeat(titles.size) { i ->
-                                val selected = pagerState.currentPage == i
-                                Box(
-                                    modifier = Modifier
-                                        .size(if (selected) 10.dp else 8.dp)
-                                        .background(
-                                            color = if (selected) MaterialTheme.colorScheme.primary else Color.LightGray,
-                                            shape = MaterialTheme.shapes.small
-                                        )
-                                        .clickable {
-                                            pagerScope.launch { pagerState.animateScrollToPage(i) }
+                            IconButton(
+                                onClick = {
+                                    val current = pagerState.currentPage
+                                    if (current > 0) {
+                                        pagerScope.launch {
+                                            pagerState.animateScrollToPage(current - 1)
                                         }
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.ChevronLeft,
+                                    contentDescription = "Previous page"
+                                )
+                            }
+
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                repeat(titles.size) { i ->
+                                    val selected = pagerState.currentPage == i
+                                    Box(
+                                        modifier = Modifier
+                                            .size(if (selected) 10.dp else 8.dp)
+                                            .background(
+                                                color = if (selected) MaterialTheme.colorScheme.primary else Color.LightGray,
+                                                shape = MaterialTheme.shapes.small
+                                            )
+                                            .clickable {
+                                                pagerScope.launch {
+                                                    pagerState.animateScrollToPage(i)
+                                                }
+                                            }
+                                    )
+                                }
+                            }
+
+                            IconButton(
+                                onClick = {
+                                    val current = pagerState.currentPage
+                                    val maxIndex = titles.lastIndex
+                                    if (current < maxIndex) {
+                                        pagerScope.launch {
+                                            pagerState.animateScrollToPage(current + 1)
+                                        }
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.ChevronRight,
+                                    contentDescription = "Next page"
                                 )
                             }
                         }
@@ -543,7 +687,7 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    // --- Dialog Regatta Settings ---
+                    // --- Dialog REGATTA SETTINGS ---
                     if (showRegattaSettings) {
                         RegattaSettingsDialog(
                             currentClass = selectedClass,
@@ -557,7 +701,7 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    // --- INFO porto ---
+                    // --- INFO PORTO ---
                     portInfoToShow?.let { p ->
                         AlertDialog(
                             onDismissRequest = { portInfoToShow = null },
