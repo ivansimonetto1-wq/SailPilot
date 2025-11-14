@@ -27,7 +27,7 @@ fun RegattaPanel(
     Surface(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF000F17))
+            .background(MaterialTheme.colorScheme.background)
     ) {
         Column(
             modifier = Modifier
@@ -36,13 +36,15 @@ fun RegattaPanel(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // HEADER
             Text(
                 "Regatta dashboard",
-                color = Color.Cyan,
+                color = MaterialTheme.colorScheme.primary,
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold
             )
 
+            // GRID ESA-STYLE
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -55,13 +57,13 @@ fun RegattaPanel(
                         modifier = Modifier.weight(1f),
                         title = "SOG",
                         value = sogKn?.let { "${it.roundToInt()} kn" } ?: "--",
-                        accent = Color(0xFFFFC107)
+                        accent = MaterialTheme.colorScheme.primary
                     )
                     RegattaTile(
                         modifier = Modifier.weight(1f),
                         title = "COG",
                         value = cogDeg?.let { "${it.roundToInt()}°" } ?: "--",
-                        accent = Color(0xFF29B6F6)
+                        accent = MaterialTheme.colorScheme.secondary
                     )
                 }
                 Row(
@@ -83,16 +85,20 @@ fun RegattaPanel(
                 }
             }
 
+            // ETA
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color(0xFF001822), shape = MaterialTheme.shapes.medium)
+                    .background(
+                        color = MaterialTheme.colorScheme.surface,
+                        shape = MaterialTheme.shapes.medium
+                    )
                     .padding(12.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     "ETA: ${etaToWpText ?: "--"}",
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.primary,
                     fontSize = 28.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -111,7 +117,10 @@ private fun RegattaTile(
     Column(
         modifier = modifier
             .heightIn(min = 90.dp)
-            .background(Color(0xFF001822), shape = MaterialTheme.shapes.medium)
+            .background(
+                color = MaterialTheme.colorScheme.surface,
+                shape = MaterialTheme.shapes.medium
+            )
             .padding(10.dp),
         verticalArrangement = Arrangement.SpaceBetween
     ) {
@@ -123,7 +132,8 @@ private fun RegattaTile(
         )
         Text(
             value,
-            color = Color.White,
+            // NUMERI: usano il primary → in tema notte saranno ROSSI o VERDI
+            color = MaterialTheme.colorScheme.primary,
             fontSize = 30.sp,
             fontWeight = FontWeight.Bold
         )

@@ -5,24 +5,29 @@ import com.perseitech.sailpilot.ui.WeatherSnapshot
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import kotlin.math.abs
 
 object OpenMeteoClient {
 
     /**
-     * Scarica un singolo snapshot meteo usando Open-Meteo (marine API).
+     * Scarica un singolo snapshot meteo usando l'API Marine di Open-Meteo.
      *
-     * Nota: implementazione volutamente semplice / robusta:
-     * - niente librerie esterne
-     * - in caso di errore ritorna null
+     * - Vento: da current_weather (km/h → kn)
+     * - Onda: wave_height (prima ora)
+     * - Maree: sea_level_height_msl (prima ora) → stringa descrittiva
+     *
+     * ATTENZIONE: Open-Meteo stesso dice che sea_level_height_msl
+     * NON è adatto per navigazione costiera di precisione. Qui lo
+     * usiamo solo come indicazione qualitativa (alta/bassa/prossimo
+     * a livello medio).
      */
     fun fetchSnapshot(lat: Double, lon: Double): WeatherSnapshot? {
         return try {
-            // API marine: vento + onda
             val urlStr =
                 "https://api.open-meteo.com/v1/marine" +
                         "?latitude=$lat&longitude=$lon" +
                         "&current_weather=true" +
-                        "&hourly=wave_height"
+                        "&hourly=wave_height,sea_level_height_msl"
 
             val url = URL(urlStr)
             val conn = (url.openConnection() as HttpURLConnection).apply {
@@ -43,7 +48,7 @@ object OpenMeteoClient {
 
             val json = JSONObject(body)
 
-            // current_weather blocco principale
+            // --- VENTO ---
             val cw = json.optJSONObject("current_weather")
             val windSpeedKmh = cw?.optDouble("windspeed", Double.NaN)
             val windDirDeg = cw?.optDouble("winddirection", Double.NaN)
@@ -58,8 +63,10 @@ object OpenMeteoClient {
                     windDirDeg
                 else null
 
-            // sea state molto semplificato da wave_height (prima ora della serie)
+            // --- ONDA + MAREE ---
             val hourly = json.optJSONObject("hourly")
+
+            // Onda (già usata prima, ma ora la rifacciamo pulita)
             val waveHeights = hourly?.optJSONArray("wave_height")
             val seaState: String? = if (waveHeights != null && waveHeights.length() > 0) {
                 val h = waveHeights.optDouble(0, Double.NaN)
@@ -68,22 +75,33 @@ object OpenMeteoClient {
                         h < 0.5 -> "Calm / slight (H≈${"%.1f".format(h)} m)"
                         h < 1.5 -> "Moderate sea (H≈${"%.1f".format(h)} m)"
                         h < 2.5 -> "Rough sea (H≈${"%.1f".format(h)} m)"
-                        else -> "Very rough (H≈${"%.1f".format(h)} m)"
+                        else    -> "Very rough (H≈${"%.1f".format(h)} m)"
                     }
                 } else null
             } else null
 
-            // Per le maree servirebbe un endpoint dedicato: per ora stringa placeholder
-            val tide: String? = null
+            // Maree (sea_level_height_msl)
+            val seaLevelArr = hourly?.optJSONArray("sea_level_height_msl")
+            val tide: String? = if (seaLevelArr != null && seaLevelArr.length() > 0) {
+                val sl = seaLevelArr.optDouble(0, Double.NaN)
+                if (sl.isFinite()) {
+                    when {
+                        sl > 0.5  -> "Sea level +${"%.2f".format(sl)} m (above mean)"
+                        sl < -0.5 -> "Sea level ${"%.2f".format(sl)} m (below mean)"
+                        abs(sl) <= 0.5 -> "Sea level near mean (Δ≈${"%.2f".format(sl)} m)"
+                        else -> null
+                    }
+                } else null
+            } else null
 
             WeatherSnapshot(
                 twsKn = twsKn,
                 twdDeg = twdDeg,
-                sogKn = null,          // SOG/COG sono dai tuoi strumenti, qui lascio null
+                sogKn = null,          // SOG/COG → strumenti di bordo
                 cogDeg = null,
                 seaState = seaState,
                 tide = tide,
-                providerName = "Open-Meteo",
+                providerName = "Open-Meteo Marine",
                 isForecast = false
             )
         } catch (e: Exception) {

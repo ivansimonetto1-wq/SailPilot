@@ -63,7 +63,7 @@ fun WeatherPanel(
 
             Spacer(Modifier.height(8.dp))
 
-            // GRID 2x2 stile strumento
+            // GRID 2x2 stile ESA
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -76,13 +76,13 @@ fun WeatherPanel(
                         modifier = Modifier.weight(1f),
                         title = "TWS",
                         value = snapshot.twsKn?.let { "${it.roundToInt()} kn" } ?: "--",
-                        accent = Color(0xFF00E676)
+                        accent = MaterialTheme.colorScheme.primary
                     )
                     WeatherTile(
                         modifier = Modifier.weight(1f),
                         title = "TWD",
                         value = snapshot.twdDeg?.let { "${it.roundToInt()}°" } ?: "--",
-                        accent = Color(0xFF29B6F6)
+                        accent = MaterialTheme.colorScheme.secondary
                     )
                 }
                 Row(
@@ -154,7 +154,7 @@ private fun WeatherTile(
         modifier = modifier
             .heightIn(min = 90.dp)
             .background(
-                color = Color(0xFF001822),
+                color = MaterialTheme.colorScheme.surface,
                 shape = MaterialTheme.shapes.medium
             )
             .padding(10.dp),
@@ -168,7 +168,8 @@ private fun WeatherTile(
         )
         Text(
             value,
-            color = Color.White,
+            // anche qui numeri agganciati a primary → rosso/verde in tema notte
+            color = MaterialTheme.colorScheme.primary,
             fontSize = 28.sp,
             fontWeight = FontWeight.Bold
         )
